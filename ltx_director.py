@@ -31,6 +31,50 @@ log = logging.getLogger(__name__)
 # Custom socket type shared with LTXSequencer
 GuideData = io.Custom("GUIDE_DATA")
 
+LTX_RESOLUTION_PRESETS = {
+    "1:1": [
+        (512, 512),
+        (640, 640),
+        (768, 768),
+        (896, 896),
+        (1024, 1024),
+        (1088, 1088),
+    ],
+    "4:3": [
+        (384, 512),
+        (480, 640),
+        (576, 768),
+        (672, 896),
+        (768, 1024),
+        (1056, 1408),
+    ],
+    "3:2": [
+        (384, 576),
+        (512, 768),
+        (576, 864),
+        (704, 1056),
+        (768, 1152),
+        (1088, 1632),
+    ],
+    "16:9": [
+        (320, 576),
+        (448, 768),
+        (512, 896),
+        (576, 1024),
+        (704, 1216),
+        (1088, 1920),
+    ],
+}
+
+LTX_QUALITY_TIERS = [
+    "1 - fast samples",
+    "2 - fast and ok",
+    "3 - reasonable",
+    "4 - better details",
+    "5 - really good",
+    "6 - LTX 2.3 native",
+]
+
 
 def _load_image_tensor(seg: dict) -> torch.Tensor:
     """Decode an image from the ComfyUI input folder (if imageFile provided) or fallback to base64
@@ -64,6 +108,22 @@ def _load_image_tensor(seg: dict) -> torch.Tensor:
         return torch.from_numpy(arr).unsqueeze(0)
     except:
         return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+
+
+def _ltx_preset_dimensions(aspect_ratio: str, orientation: str, quality_tier: str) -> tuple[int, int]:
+    presets = LTX_RESOLUTION_PRESETS.get(aspect_ratio, LTX_RESOLUTION_PRESETS["16:9"])
+    try:
+        tier_index = int(str(quality_tier).split(" - ", 1)[0]) - 1
+    except (TypeError, ValueError):
+        tier_index = len(presets) - 1
+    tier_index = max(0, min(tier_index, len(presets) - 1))
+
+    short_side, long_side = presets[tier_index]
+    if aspect_ratio == "1:1":
+        return short_side, short_side
+    if orientation == "portrait":
+        return short_side, long_side
+    return long_side, short_side
 
 
 def _resize_image(tensor: torch.Tensor, target_w: int, target_h: int, method: str, divisible_by: int) -> torch.Tensor:
@@ -442,13 +502,30 @@ class LTXDirector(io.ComfyNode):
                     "guide_strength", default="",
                     tooltip="Auto-populated from the timeline editor (comma-separated guide strengths for image segments).",
                 ),
-                io.Int.Input(
-                    "custom_width", default=0, min=0, max=8192, step=1, optional=True,
-                    tooltip="Target output width for all image segments. Set to 0 to use the original image width.",
+                io.Boolean.Input(
+                    "use_input_image_size", default=False, optional=True,
+                    tooltip="Use the first input image size instead of the LTX preset resolution.",
                 ),
-                io.Int.Input(
-                    "custom_height", default=0, min=0, max=8192, step=1, optional=True,
-                    tooltip="Target output height for all image segments. Set to 0 to use the original image height.",
+                io.Combo.Input(
+                    "aspect_ratio",
+                    options=["16:9", "4:3", "3:2", "1:1"],
+                    default="16:9",
+                    optional=True,
+                    tooltip="LTX target aspect ratio.",
+                ),
+                io.Combo.Input(
+                    "orientation",
+                    options=["landscape", "portrait"],
+                    default="landscape",
+                    optional=True,
+                    tooltip="LTX target orientation.",
+                ),
+                io.Combo.Input(
+                    "quality_tier",
+                    options=LTX_QUALITY_TIERS,
+                    default="6 - LTX 2.3 native",
+                    optional=True,
+                    tooltip="LTX resolution quality tier.",
                 ),
                 io.Combo.Input(
                     "resize_method",
@@ -481,13 +558,15 @@ class LTXDirector(io.ComfyNode):
     def execute(cls, model, clip, global_prompt, duration_frames, duration_seconds,
                 timeline_data, local_prompts, segment_lengths, guide_strength="", epsilon=1e-3,
                 frame_rate=24, display_mode="seconds",
-                custom_width=768, custom_height=512, resize_method="maintain aspect ratio",
+                use_input_image_size=False, aspect_ratio="16:9", orientation="landscape",
+                quality_tier="6 - LTX 2.3 native", resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
                 use_custom_audio=False) -> io.NodeOutput:
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
-        derived_w, derived_h = custom_width, custom_height
+        target_w, target_h = _ltx_preset_dimensions(aspect_ratio, orientation, quality_tier)
+        derived_w, derived_h = (0, 0) if use_input_image_size else (target_w, target_h)
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
             img_segs = [
@@ -508,26 +587,11 @@ class LTXDirector(io.ComfyNode):
                 # Apply resize
                 src_h, src_w = tensor.shape[1], tensor.shape[2]
 
-                def snap(val, div):
-                    return max(div, (val // div) * div)
-
-                if custom_width > 0 and custom_height > 0:
-                    # Both dimensions set — apply selected resize_method (pad, crop, stretch, maintain AR)
-                    tensor = _resize_image(tensor, custom_width, custom_height, resize_method, divisible_by)
-                elif custom_width > 0:
-                    # Width only — scale height from AR, snap both, then resize to exact dimensions
-                    tgt_w = snap(custom_width, divisible_by)
-                    tgt_h = snap(int(src_h * tgt_w / src_w), divisible_by)
-                    tensor = _resize_image(tensor, tgt_w, tgt_h, "stretch to fit", divisible_by)
-                elif custom_height > 0:
-                    # Height only — scale width from AR, snap both, then resize to exact dimensions
-                    tgt_h = snap(custom_height, divisible_by)
-                    tgt_w = snap(int(src_w * tgt_h / src_h), divisible_by)
-                    tensor = _resize_image(tensor, tgt_w, tgt_h, "stretch to fit", divisible_by)
-                else:
-                    # Both zero — keep original dimensions, just snap to divisible_by
+                if use_input_image_size:
+                    # Matches the previous custom_width=0/custom_height=0 behavior.
                     tensor = _resize_image(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
-
+                else:
+                    tensor = _resize_image(tensor, target_w, target_h, resize_method, divisible_by)
 
                 # Apply compression
                 if img_compression > 0:
