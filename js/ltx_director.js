@@ -146,6 +146,15 @@ const STYLES = `
   .pr-prompt-area:focus {
     border-color: #888;
   }
+  .pr-privacy-hidden-text {
+    color: transparent !important;
+    caret-color: transparent !important;
+    text-shadow: none !important;
+    -webkit-text-fill-color: transparent !important;
+  }
+  .pr-privacy-hidden-text::placeholder {
+    color: transparent !important;
+  }
   .pr-audio-info {
     width: 100%;
     height: 100%;
@@ -965,6 +974,67 @@ class TimelineEditor {
     return this.hideTimelineImagesPromptsEnabled() && !this._isNodeHovering;
   }
 
+  setElementTextPrivacy(element, shouldHide) {
+    if (!element) return;
+    element.classList.toggle("pr-privacy-hidden-text", shouldHide);
+
+    const canReadOnly = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+    if (!canReadOnly) return;
+
+    if (shouldHide) {
+      if (element.dataset.prPrivacyReadonly === undefined) {
+        element.dataset.prPrivacyReadonly = element.readOnly ? "true" : "false";
+      }
+      element.readOnly = true;
+    } else if (element.dataset.prPrivacyReadonly !== undefined) {
+      element.readOnly = element.dataset.prPrivacyReadonly === "true";
+      delete element.dataset.prPrivacyReadonly;
+    }
+  }
+
+  getGlobalPromptWidget() {
+    return this.node.widgets?.find(w => w.name === "global_prompt");
+  }
+
+  getWidgetTextElements(widget) {
+    const elements = [];
+    const addElement = (el) => {
+      if (el instanceof HTMLElement && !elements.includes(el)) elements.push(el);
+    };
+
+    addElement(widget?.inputEl);
+    addElement(widget?.textarea);
+    addElement(widget?.textArea);
+    addElement(widget?.element);
+
+    if (widget?.element instanceof HTMLElement) {
+      widget.element.querySelectorAll?.("textarea, input, [contenteditable='true']").forEach(addElement);
+    }
+
+    return elements.filter((el) => (
+      el instanceof HTMLInputElement
+      || el instanceof HTMLTextAreaElement
+      || el.getAttribute?.("contenteditable") === "true"
+    ));
+  }
+
+  updatePromptPrivacyVisibility() {
+    const shouldHide = this.shouldHideTimelineImagesPrompts();
+
+    if (this.promptInput) {
+      const hideSegmentPrompt = shouldHide && this.promptInput.style.display !== "none";
+      this.setElementTextPrivacy(this.promptInput, hideSegmentPrompt);
+    }
+
+    const globalPromptWidget = this.getGlobalPromptWidget();
+    const globalPromptVisible = !!globalPromptWidget
+      && !globalPromptWidget.hidden
+      && !(globalPromptWidget.options && globalPromptWidget.options.hidden);
+    for (const element of this.getWidgetTextElements(globalPromptWidget)) {
+      this.setElementTextPrivacy(element, shouldHide && globalPromptVisible);
+    }
+  }
+
   eventToGraphPos(e) {
     const canvas = window.app?.canvas;
     if (canvas?.convertEventToCanvasOffset) {
@@ -1001,7 +1071,10 @@ class TimelineEditor {
     const isHovering = this.isEventInsideNode(e);
     if (this._isNodeHovering === isHovering) return;
     this._isNodeHovering = isHovering;
-    if (this.hideTimelineImagesPromptsEnabled()) this.render();
+    if (this.hideTimelineImagesPromptsEnabled()) {
+      this.updatePromptPrivacyVisibility();
+      this.render();
+    }
   }
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
@@ -1090,7 +1163,10 @@ class TimelineEditor {
       this._isHovering = true;
       if (!this._isNodeHovering) {
         this._isNodeHovering = true;
-        if (this.hideTimelineImagesPromptsEnabled()) this.render();
+        if (this.hideTimelineImagesPromptsEnabled()) {
+          this.updatePromptPrivacyVisibility();
+          this.render();
+        }
       }
     });
     this.wrapper.addEventListener("mouseleave", () => { this._isHovering = false; });
@@ -1330,10 +1406,15 @@ class TimelineEditor {
     this.promptInput.className = "pr-prompt-area";
     this.promptInput.placeholder = "Enter prompt for selected segment...";
     this.promptInput.addEventListener("input", () => {
+      if (this.shouldHideTimelineImagesPrompts()) {
+        this.updateUIFromSelection();
+        return;
+      }
       if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
         this.timeline.segments[this.selectedIndex].prompt = this.promptInput.value;
         this.commitChanges();
       }
+      this.updatePromptPrivacyVisibility();
     });
 
     // --- Audio Info Area ---
@@ -2438,6 +2519,8 @@ class TimelineEditor {
         ? "Replace the selected segment image."
         : "Select an image segment to replace its image.";
     }
+
+    this.updatePromptPrivacyVisibility();
   }
 
   // --- Rendering logic ---
@@ -4066,12 +4149,13 @@ class TimelineEditor {
       cb.type = "checkbox";
       cb.checked = hideTimelineVisualsWidget.value === true || hideTimelineVisualsWidget.value === "true";
       cb.style.cursor = "pointer";
-      cb.title = "Hide image thumbnails and prompt text inside the timeline.";
+      cb.title = "Hide timeline images plus global and segment prompt text when the mouse is outside the node.";
       cb.addEventListener("change", () => {
         hideTimelineVisualsWidget.value = cb.checked ? "true" : "false";
         if (hideTimelineVisualsWidget.callback) {
           try { hideTimelineVisualsWidget.callback(hideTimelineVisualsWidget.value, app.canvas, this.node, null, null); } catch (e) { }
         }
+        this.updatePromptPrivacyVisibility();
         this.render();
         if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
       });
@@ -4216,6 +4300,9 @@ class TimelineEditor {
           globalPromptWidget.hidden = false;
           if (globalPromptWidget.element) globalPromptWidget.element.style.display = "";
         } else {
+          for (const element of this.getWidgetTextElements(globalPromptWidget)) {
+            this.setElementTextPrivacy(element, false);
+          }
           globalPromptWidget.computeSize = () => [0, 0];
           globalPromptWidget.hidden = true;
           if (globalPromptWidget.element) globalPromptWidget.element.style.display = "none";
@@ -4230,6 +4317,7 @@ class TimelineEditor {
           this.displayModeWidget.value = origVal;
           if (this.displayModeWidget.callback) this.displayModeWidget.callback(origVal);
         }
+        this.updatePromptPrivacyVisibility();
       });
       menu.appendChild(this._makeSettingRow("Use Global Prompt", cb));
     }
