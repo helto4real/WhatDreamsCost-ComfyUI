@@ -24,6 +24,10 @@ function hideWidget(w) {
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+function timelineNodeInnerWidth(node) {
+  return Math.max((node?.size?.[0] || 390) - 28, 320);
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -1637,6 +1641,7 @@ class TimelineEditor {
   }
 
   checkResize() {
+    this.syncTimelineWidgetWidth();
     const viewportWidth = this.viewport.clientWidth;
     const currentScale = this.getRenderScale();
 
@@ -1650,6 +1655,28 @@ class TimelineEditor {
       this.resizeCanvas(newCanvasWidth);
     }
     this._renderLoop = requestAnimationFrame(this.checkResize.bind(this));
+  }
+
+  syncTimelineWidgetWidth() {
+    const width = `${timelineNodeInnerWidth(this.node)}px`;
+    let changed = false;
+    const elements = [
+      this.container,
+      this.domWidget?.element,
+      this.domWidget?.inputEl,
+      this.wrapper,
+    ];
+
+    for (const element of elements) {
+      if (!element?.style) continue;
+      if (element.style.width !== width) {
+        element.style.width = width;
+        element.style.maxWidth = width;
+        changed = true;
+      }
+    }
+
+    if (changed) this._lastWidth = 0;
   }
 
   getRenderScale() {
@@ -4414,7 +4441,7 @@ app.registerExtension({
 
         widget.computeSize = function (width) {
           const canvasH = self._timelineEditor ? self._timelineEditor.canvasHeight : CANVAS_HEIGHT;
-          return [width, canvasH + 235];
+          return [timelineNodeInnerWidth(self), canvasH + 235];
         };
 
         const self = this;
