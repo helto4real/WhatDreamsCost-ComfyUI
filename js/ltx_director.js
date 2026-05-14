@@ -99,6 +99,14 @@ const STYLES = `
     background: #333;
     border-color: #555;
   }
+  .pr-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+  .pr-btn:disabled:hover {
+    background: #222;
+    border-color: #111;
+  }
   .pr-btn-danger:hover {
     background: #4a1515;
     border-color: #cc4444;
@@ -1151,6 +1159,17 @@ class TimelineEditor {
     uploadBtn.innerHTML = `${ICONS.upload} Add Image`;
     uploadBtn.addEventListener("click", () => this.showTimelineImageBrowser());
 
+    this.replaceImageBtn = document.createElement("button");
+    this.replaceImageBtn.className = "pr-btn";
+    this.replaceImageBtn.innerHTML = `${ICONS.upload} Replace Image`;
+    this.replaceImageBtn.disabled = true;
+    this.replaceImageBtn.title = "Select an image segment to replace its image.";
+    this.replaceImageBtn.addEventListener("click", () => {
+      const seg = this.getSelectedImageSegment();
+      if (!seg) return;
+      this.showTimelineImageBrowser(null, null, { mode: "replace", segmentId: seg.id });
+    });
+
     const uploadAudioBtn = document.createElement("button");
     uploadAudioBtn.className = "pr-btn";
     uploadAudioBtn.innerHTML = `${ICONS.audio} Add Audio`;
@@ -1169,6 +1188,7 @@ class TimelineEditor {
     actionGroup.appendChild(this.fileInput);
     actionGroup.appendChild(this.audioFileInput);
     actionGroup.appendChild(uploadBtn);
+    actionGroup.appendChild(this.replaceImageBtn);
     actionGroup.appendChild(addTextBtn);
     actionGroup.appendChild(uploadAudioBtn);
     actionGroup.appendChild(deleteBtn);
@@ -1774,14 +1794,29 @@ class TimelineEditor {
     if (onDone) await onDone("input");
   }
 
-  async showTimelineImageBrowser(targetFrameStart = null, explicitLength = null) {
+  getTimelineImageUrl(folderAlias, image) {
+    return image.image_url || `/wdc_timeline_images/image?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+  }
+
+  getSelectedImageSegment() {
+    if (this.selectionType !== "image" || this.selectedIndex < 0) return null;
+    const seg = this.timeline.segments[this.selectedIndex];
+    if (!seg || seg.type === "text" || !seg.imageB64) return null;
+    return seg;
+  }
+
+  async showTimelineImageBrowser(targetFrameStart = null, explicitLength = null, options = {}) {
     this.closeTimelineImageBrowser();
+    const isReplace = options.mode === "replace";
+    const targetSegmentId = options.segmentId || null;
+    const title = isReplace ? "Replace Timeline Image" : "Add Timeline Image";
+    const okLabel = isReplace ? "Replace Image" : "Add Image";
 
     const overlay = document.createElement("div");
     overlay.className = "pr-image-browser-dialog";
     overlay.innerHTML = `
       <div class="pr-image-browser-panel">
-        <h3>Add Timeline Image</h3>
+        <h3>${escapeHtml(title)}</h3>
         <div class="pr-image-browser-controls">
           <select class="folder" title="Choose configured image folder"></select>
           <input class="search" type="search" placeholder="Search images..." title="Search loaded image filenames and relative paths">
@@ -1801,7 +1836,7 @@ class TimelineEditor {
         <div class="pr-image-browser-grid hide-images"></div>
         <div class="pr-image-browser-actions">
           <button class="cancel" type="button">Cancel</button>
-          <button class="ok" type="button">Add Image</button>
+          <button class="ok" type="button">${escapeHtml(okLabel)}</button>
         </div>
       </div>`;
 
@@ -1943,7 +1978,11 @@ class TimelineEditor {
         return;
       }
       try {
-        await this.addTimelineImageFromBrowser(folderSelect.value, selectedImage, targetFrameStart, explicitLength);
+        if (isReplace) {
+          await this.replaceTimelineImageFromBrowser(targetSegmentId, folderSelect.value, selectedImage);
+        } else {
+          await this.addTimelineImageFromBrowser(folderSelect.value, selectedImage, targetFrameStart, explicitLength);
+        }
         this.closeTimelineImageBrowser();
       } catch (err) {
         alert(err.message);
@@ -1969,7 +2008,7 @@ class TimelineEditor {
   async addTimelineImageFromBrowser(folderAlias, image, targetFrameStart = null, explicitLength = null) {
     const frameRate = this.getFrameRate();
     const newLength = explicitLength !== null ? explicitLength : frameRate * 1;
-    const imageUrl = image.image_url || `/wdc_timeline_images/image?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+    const imageUrl = this.getTimelineImageUrl(folderAlias, image);
 
     await new Promise((resolve, reject) => {
       const img = new Image();
@@ -2017,6 +2056,37 @@ class TimelineEditor {
         this.timeline.segments.sort((a, b) => a.start - b.start);
         this.selectionType = "image";
         this.selectedIndex = this.timeline.segments.findIndex(s => s.id === seg.id);
+        this.updateUIFromSelection();
+        this.commitChanges(true);
+        this.render();
+        resolve();
+      };
+      img.onerror = () => reject(new Error(`Could not load image: ${image.filename}`));
+      img.src = imageUrl;
+    });
+  }
+
+  async replaceTimelineImageFromBrowser(segmentId, folderAlias, image) {
+    if (!segmentId) throw new Error("No image segment is selected.");
+
+    const imageUrl = this.getTimelineImageUrl(folderAlias, image);
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const idx = this.timeline.segments.findIndex((seg) => seg.id === segmentId);
+        const seg = this.timeline.segments[idx];
+        if (idx < 0 || !seg || seg.type === "text" || !seg.imageB64) {
+          reject(new Error("The selected image segment is no longer available."));
+          return;
+        }
+
+        seg.imageFolderAlias = folderAlias;
+        seg.imageFile = image.filename;
+        seg.imageB64 = imageUrl;
+        seg.imgObj = img;
+
+        this.selectionType = "image";
+        this.selectedIndex = idx;
         this.updateUIFromSelection();
         this.commitChanges(true);
         this.render();
@@ -2359,6 +2429,14 @@ class TimelineEditor {
       } else {
         this.segmentBoundsDisplay.textContent = "Start: - | End: -";
       }
+    }
+
+    if (this.replaceImageBtn) {
+      const canReplace = !!this.getSelectedImageSegment();
+      this.replaceImageBtn.disabled = !canReplace;
+      this.replaceImageBtn.title = canReplace
+        ? "Replace the selected segment image."
+        : "Select an image segment to replace its image.";
     }
   }
 
