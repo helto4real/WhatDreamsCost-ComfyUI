@@ -1719,16 +1719,15 @@ class TimelineEditor {
     document.querySelector(".pr-image-large-preview")?.remove();
   }
 
-  showTimelineImageLargePreview(alias, image) {
+  showImagePreview(imageUrl, caption = "") {
     document.querySelector(".pr-image-large-preview")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "pr-image-large-preview";
-    const imageUrl = `/wdc_timeline_images/image?alias=${encodeURIComponent(alias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
     overlay.innerHTML = `
       <div class="pr-image-large-preview-panel">
         <button class="pr-image-large-preview-close" type="button" title="Close preview" aria-label="Close preview">×</button>
         <img src="${escapeHtml(imageUrl)}" alt="">
-        <div class="pr-image-large-preview-caption">${escapeHtml(image.filename)} (${image.width || "?"}x${image.height || "?"})</div>
+        ${caption ? `<div class="pr-image-large-preview-caption">${escapeHtml(caption)}</div>` : ""}
       </div>`;
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay || event.target.closest(".pr-image-large-preview-close")) {
@@ -1736,6 +1735,17 @@ class TimelineEditor {
       }
     });
     document.body.appendChild(overlay);
+  }
+
+  showTimelineImageLargePreview(alias, image) {
+    const imageUrl = `/wdc_timeline_images/image?alias=${encodeURIComponent(alias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+    this.showImagePreview(imageUrl, `${image.filename} (${image.width || "?"}x${image.height || "?"})`);
+  }
+
+  showTimelineSegmentImagePreview(seg) {
+    if (!seg?.imageB64) return;
+    const caption = seg.imageFile || seg.fileName || "Timeline image";
+    this.showImagePreview(seg.imageB64, caption);
   }
 
   async showTimelineImageFolderDialog(onDone) {
@@ -3018,6 +3028,19 @@ class TimelineEditor {
 
     this.selectionType = hit.track;
     const targetArray = hit.track === "audio" ? this.timeline.audioSegments : this.timeline.segments;
+
+    if ((e.ctrlKey || e.metaKey) && hit.track === "image" && hit.type === "center") {
+      const seg = targetArray[hit.index];
+      if (seg?.type !== "text" && seg?.imageB64) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.selectedIndex = hit.index;
+        this.updateUIFromSelection();
+        this.render();
+        this.showTimelineSegmentImagePreview(seg);
+        return;
+      }
+    }
 
     if (hit.type === "joint") {
       this.selectedIndex = hit.leftIndex;
