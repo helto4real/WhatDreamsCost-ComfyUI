@@ -6,6 +6,7 @@ from .load_audio_ui import LoadAudioUI
 from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
 from .ltx_director_guide import LTXDirectorGuide
+from . import timeline_image_routes  # noqa: F401
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 

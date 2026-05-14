@@ -24,6 +24,29 @@ function hideWidget(w) {
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[char]);
+}
+
+async function fetchTimelineImageJson(url, options) {
+  const response = await api.fetchApi(url, options);
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (err) {
+    throw new Error(text || response.statusText || `HTTP ${response.status}`);
+  }
+  if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+  return data;
+}
+
 // --- Modern Dark/Grey UI CSS (ComfyUI Match) ---
 const STYLES = `
   .pr-wrapper {
@@ -514,6 +537,204 @@ const STYLES = `
   .pr-segment:hover:not(.active) {
     color: #ccc;
   }
+  .pr-image-browser-dialog {
+    position: fixed;
+    z-index: 10001;
+    inset: 0;
+    background: rgba(0,0,0,.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pr-image-browser-panel {
+    width: 720px;
+    max-width: 92vw;
+    max-height: 86vh;
+    overflow: auto;
+    background: #222;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 14px;
+    color: #ddd;
+    font: 12px Arial, sans-serif;
+    box-shadow: 0 12px 44px rgba(0,0,0,.55);
+  }
+  .pr-image-browser-panel h3 {
+    margin: 0 0 10px;
+    font-size: 15px;
+  }
+  .pr-image-browser-controls {
+    display: grid;
+    grid-template-columns: 1fr minmax(150px, 1fr) auto auto auto minmax(130px, 180px);
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .pr-image-browser-controls select,
+  .pr-image-browser-controls input,
+  .pr-image-folder-row input,
+  .pr-image-folder-row select {
+    background: #151515;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px;
+    min-width: 0;
+  }
+  .pr-image-browser-controls button,
+  .pr-image-browser-actions button,
+  .pr-image-folder-row button {
+    background: #333;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .pr-image-browser-controls button:hover,
+  .pr-image-browser-actions button:hover,
+  .pr-image-folder-row button:hover {
+    background: #444;
+  }
+  .pr-image-icon-btn {
+    width: 32px;
+    height: 32px;
+    padding: 4px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pr-image-icon-btn svg,
+  .pr-image-columns-control svg {
+    width: 18px;
+    height: 18px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .pr-image-columns-control {
+    display: grid;
+    grid-template-columns: 22px 1fr 18px;
+    gap: 6px;
+    align-items: center;
+    color: #ddd;
+  }
+  .pr-image-columns-control input {
+    width: 100%;
+    min-width: 0;
+  }
+  .pr-image-browser-grid {
+    --pr-image-columns: 4;
+    display: grid;
+    grid-template-columns: repeat(var(--pr-image-columns), minmax(0, 1fr));
+    gap: 8px;
+    max-height: 52vh;
+    overflow: auto;
+    padding: 2px;
+  }
+  .pr-image-browser-grid.hide-images .pr-image-tile img {
+    opacity: 0;
+  }
+  .pr-image-browser-panel:hover .pr-image-browser-grid.hide-images .pr-image-tile img,
+  .pr-image-browser-grid.show-images .pr-image-tile img {
+    opacity: 1;
+  }
+  .pr-image-tile {
+    min-width: 0;
+    background: #181818;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 5px;
+    color: #ddd;
+    cursor: pointer;
+    text-align: left;
+  }
+  .pr-image-tile.selected {
+    border-color: #8ab4f8;
+    background: #202a36;
+  }
+  .pr-image-tile img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: contain;
+    background: #101010;
+    border: 1px solid #2d2d2d;
+    border-radius: 3px;
+    transition: opacity .12s ease;
+  }
+  .pr-image-browser-meta {
+    margin-top: 8px;
+    color: #aaa;
+    font-size: 11px;
+    min-height: 14px;
+  }
+  .pr-image-browser-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+  .pr-image-folder-row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items: center;
+  }
+  .pr-image-large-preview {
+    position: fixed;
+    z-index: 10003;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,.72);
+    padding: 24px;
+  }
+  .pr-image-large-preview-panel {
+    position: relative;
+    max-width: 92vw;
+    max-height: 92vh;
+    background: #151515;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 10px;
+    box-shadow: 0 12px 44px rgba(0,0,0,.55);
+  }
+  .pr-image-large-preview-panel img {
+    display: block;
+    max-width: calc(92vw - 20px);
+    max-height: calc(92vh - 52px);
+    object-fit: contain;
+    background: #0b0b0b;
+  }
+  .pr-image-large-preview-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 30px;
+    height: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(20,20,20,.88);
+    color: #ddd;
+    border: 1px solid #666;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .pr-image-large-preview-caption {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: calc(92vw - 20px);
+    margin-top: 7px;
+    color: #aaa;
+    font-size: 12px;
+  }
 `;
 
 if (!document.getElementById("prompt-relay-styles")) {
@@ -924,7 +1145,7 @@ class TimelineEditor {
     const uploadBtn = document.createElement("button");
     uploadBtn.className = "pr-btn";
     uploadBtn.innerHTML = `${ICONS.upload} Add Image`;
-    uploadBtn.addEventListener("click", () => this.fileInput.click());
+    uploadBtn.addEventListener("click", () => this.showTimelineImageBrowser());
 
     const uploadAudioBtn = document.createElement("button");
     uploadAudioBtn.className = "pr-btn";
@@ -1464,6 +1685,309 @@ class TimelineEditor {
     const x = (e.clientX - rect.left) * scaleX;
     const y = (e.clientY - rect.top) * scaleY;
     return { x, y };
+  }
+
+  closeTimelineImageBrowser() {
+    document.querySelector(".pr-image-browser-dialog")?.remove();
+    document.querySelector(".pr-image-large-preview")?.remove();
+  }
+
+  showTimelineImageLargePreview(alias, image) {
+    document.querySelector(".pr-image-large-preview")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "pr-image-large-preview";
+    const imageUrl = `/wdc_timeline_images/image?alias=${encodeURIComponent(alias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+    overlay.innerHTML = `
+      <div class="pr-image-large-preview-panel">
+        <button class="pr-image-large-preview-close" type="button" title="Close preview" aria-label="Close preview">×</button>
+        <img src="${escapeHtml(imageUrl)}" alt="">
+        <div class="pr-image-large-preview-caption">${escapeHtml(image.filename)} (${image.width || "?"}x${image.height || "?"})</div>
+      </div>`;
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay || event.target.closest(".pr-image-large-preview-close")) {
+        overlay.remove();
+      }
+    });
+    document.body.appendChild(overlay);
+  }
+
+  async showTimelineImageFolderDialog(onDone) {
+    const alias = prompt("Folder alias");
+    if (!alias) return;
+    const path = prompt("Folder path");
+    if (!path) return;
+    await fetchTimelineImageJson("/wdc_timeline_images/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias, path }),
+    });
+    if (onDone) await onDone(alias);
+  }
+
+  async removeTimelineImageFolderDialog(onDone) {
+    const data = await fetchTimelineImageJson("/wdc_timeline_images/folders");
+    const removable = data.folders.filter((folder) => folder.alias !== "input");
+    if (!removable.length) {
+      alert("No custom folders to remove.");
+      return;
+    }
+    const alias = prompt(`Folder alias to remove:\n${removable.map((folder) => folder.alias).join("\n")}`);
+    if (!alias) return;
+    await fetchTimelineImageJson(`/wdc_timeline_images/folders?alias=${encodeURIComponent(alias)}`, { method: "DELETE" });
+    if (onDone) await onDone("input");
+  }
+
+  async showTimelineImageBrowser(targetFrameStart = null, explicitLength = null) {
+    this.closeTimelineImageBrowser();
+
+    const overlay = document.createElement("div");
+    overlay.className = "pr-image-browser-dialog";
+    overlay.innerHTML = `
+      <div class="pr-image-browser-panel">
+        <h3>Add Timeline Image</h3>
+        <div class="pr-image-browser-controls">
+          <select class="folder" title="Choose configured image folder"></select>
+          <input class="search" type="search" placeholder="Search images..." title="Search loaded image filenames and relative paths">
+          <button class="scope pr-image-icon-btn" type="button" title="Recursive folder view" aria-label="Recursive folder view"></button>
+          <button class="folder-add pr-image-icon-btn" type="button" title="Add configured image folder" aria-label="Add configured image folder">+</button>
+          <button class="folder-remove pr-image-icon-btn" type="button" title="Remove configured image folder" aria-label="Remove configured image folder">−</button>
+          <label class="pr-image-columns-control" title="Thumbnail columns per row">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            <input class="columns" type="range" min="2" max="8" step="1" value="4">
+            <span class="columns-value">4</span>
+          </label>
+        </div>
+        <div class="pr-image-browser-controls" style="grid-template-columns: auto 1fr;">
+          <button class="hover-hide pr-image-icon-btn" type="button" title="Hide thumbnails until hovering over window" aria-label="Hide thumbnails until hovering over window"></button>
+          <span class="pr-image-browser-meta"></span>
+        </div>
+        <div class="pr-image-browser-grid hide-images"></div>
+        <div class="pr-image-browser-actions">
+          <button class="cancel" type="button">Cancel</button>
+          <button class="ok" type="button">Add Image</button>
+        </div>
+      </div>`;
+
+    const panel = overlay.querySelector(".pr-image-browser-panel");
+    const folderSelect = overlay.querySelector(".folder");
+    const searchInput = overlay.querySelector(".search");
+    const scopeButton = overlay.querySelector(".scope");
+    const folderAddButton = overlay.querySelector(".folder-add");
+    const folderRemoveButton = overlay.querySelector(".folder-remove");
+    const columnsInput = overlay.querySelector(".columns");
+    const columnsValue = overlay.querySelector(".columns-value");
+    const hoverHideButton = overlay.querySelector(".hover-hide");
+    const grid = overlay.querySelector(".pr-image-browser-grid");
+    const meta = overlay.querySelector(".pr-image-browser-meta");
+
+    let availableImages = [];
+    let selectedImage = null;
+    let recursive = true;
+    let hideImagesUntilHover = true;
+
+    const syncScopeButton = () => {
+      scopeButton.title = recursive ? "Show images recursively from subfolders" : "Show only images directly in this folder";
+      scopeButton.innerHTML = recursive
+        ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h9a2 2 0 0 1 2 2v2"/><path d="M6 12v6a2 2 0 0 0 2 2h5"/><path d="M10 15h4l1.5 1.5H21v3.5H10z"/></svg>`
+        : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+    };
+
+    const syncGridVisibility = () => {
+      hoverHideButton.title = hideImagesUntilHover ? "Hide thumbnails until the mouse is over this window" : "Always show thumbnails in this window";
+      hoverHideButton.innerHTML = hideImagesUntilHover
+        ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg>`
+        : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/></svg>`;
+      grid.classList.toggle("hide-images", hideImagesUntilHover);
+      grid.classList.toggle("show-images", !hideImagesUntilHover);
+    };
+
+    const syncColumns = () => {
+      const columns = Number(columnsInput.value || 4);
+      grid.style.setProperty("--pr-image-columns", String(columns));
+      columnsValue.textContent = String(columns);
+    };
+
+    const renderImageGrid = () => {
+      grid.innerHTML = "";
+      const query = searchInput.value.trim().toLowerCase();
+      const visibleImages = query
+        ? availableImages.filter((image) => String(image.filename || "").toLowerCase().includes(query))
+        : availableImages;
+
+      if (selectedImage && !visibleImages.some((image) => image.filename === selectedImage.filename)) {
+        selectedImage = null;
+      }
+
+      for (const image of visibleImages) {
+        const tile = document.createElement("button");
+        tile.type = "button";
+        tile.className = `pr-image-tile${selectedImage?.filename === image.filename ? " selected" : ""}`;
+        tile.title = `${image.filename}\nClick to select. Ctrl-click for large preview.`;
+        tile.innerHTML = `<img src="${escapeHtml(image.thumb_url)}" alt="">`;
+        tile.addEventListener("click", (event) => {
+          if (event.ctrlKey) {
+            this.showTimelineImageLargePreview(folderSelect.value, image);
+            return;
+          }
+          selectedImage = image;
+          for (const other of grid.querySelectorAll(".pr-image-tile")) other.classList.remove("selected");
+          tile.classList.add("selected");
+          meta.textContent = `${image.filename} (${image.width || "?"}x${image.height || "?"})`;
+        });
+        grid.appendChild(tile);
+      }
+
+      if (!availableImages.length) {
+        meta.textContent = "No images found.";
+      } else if (!visibleImages.length) {
+        meta.textContent = `No images match "${searchInput.value.trim()}".`;
+      } else if (query) {
+        meta.textContent = `${visibleImages.length} of ${availableImages.length} images match. Select one to add.`;
+      } else if (!selectedImage) {
+        meta.textContent = `${availableImages.length} images. Select one to add.`;
+      }
+      syncGridVisibility();
+    };
+
+    const loadFolders = async (preferredAlias = null) => {
+      const data = await fetchTimelineImageJson("/wdc_timeline_images/folders");
+      folderSelect.innerHTML = data.folders.map((folder) => `<option value="${escapeHtml(folder.alias)}">${escapeHtml(folder.alias)}${folder.exists ? "" : " (missing)"}</option>`).join("");
+      const lastAlias = preferredAlias || this.node.properties?.wdc_timeline_last_folder_alias;
+      if (lastAlias && data.folders.some((folder) => folder.alias === lastAlias)) {
+        folderSelect.value = lastAlias;
+      }
+    };
+
+    const loadImages = async () => {
+      this.node.properties = this.node.properties || {};
+      this.node.properties.wdc_timeline_last_folder_alias = folderSelect.value;
+      const data = await fetchTimelineImageJson(`/wdc_timeline_images/images?alias=${encodeURIComponent(folderSelect.value)}&recursive=${recursive ? "1" : "0"}`);
+      availableImages = data.images || [];
+      selectedImage = null;
+      renderImageGrid();
+    };
+
+    folderSelect.addEventListener("change", loadImages);
+    scopeButton.addEventListener("click", async () => {
+      recursive = !recursive;
+      syncScopeButton();
+      await loadImages();
+    });
+    folderAddButton.addEventListener("click", async () => {
+      try {
+        await this.showTimelineImageFolderDialog(async (alias) => {
+          await loadFolders(alias);
+          await loadImages();
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    folderRemoveButton.addEventListener("click", async () => {
+      try {
+        await this.removeTimelineImageFolderDialog(async (alias) => {
+          await loadFolders(alias);
+          await loadImages();
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    searchInput.addEventListener("input", renderImageGrid);
+    columnsInput.addEventListener("input", syncColumns);
+    hoverHideButton.addEventListener("click", () => {
+      hideImagesUntilHover = !hideImagesUntilHover;
+      syncGridVisibility();
+    });
+    overlay.querySelector(".cancel").addEventListener("click", () => this.closeTimelineImageBrowser());
+    overlay.querySelector(".ok").addEventListener("click", async () => {
+      if (!selectedImage) {
+        alert("Select an image first.");
+        return;
+      }
+      try {
+        await this.addTimelineImageFromBrowser(folderSelect.value, selectedImage, targetFrameStart, explicitLength);
+        this.closeTimelineImageBrowser();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) this.closeTimelineImageBrowser();
+    });
+
+    document.body.appendChild(overlay);
+    syncColumns();
+    syncScopeButton();
+    syncGridVisibility();
+    try {
+      await loadFolders();
+      await loadImages();
+    } catch (err) {
+      meta.textContent = err.message;
+    }
+    panel.focus?.();
+  }
+
+  async addTimelineImageFromBrowser(folderAlias, image, targetFrameStart = null, explicitLength = null) {
+    const frameRate = this.getFrameRate();
+    const newLength = explicitLength !== null ? explicitLength : frameRate * 1;
+    const imageUrl = image.image_url || `/wdc_timeline_images/image?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        let newStart = targetFrameStart;
+        if (newStart === null) {
+          newStart = 0;
+          this.timeline.segments.sort((a, b) => a.start - b.start);
+          for (let i = 0; i < this.timeline.segments.length; i++) {
+            let seg = this.timeline.segments[i];
+            if (newStart + newLength <= seg.start) break;
+            newStart = Math.max(newStart, seg.start + seg.length);
+          }
+        }
+
+        const currentDuration = this.getVisualDurationFrames();
+        if (targetFrameStart !== null) {
+          let tempId = "TEMP_" + Date.now();
+          this.timeline.segments.push({ id: tempId, start: newStart, length: newLength, type: "temp" });
+          let result = this._applyCenterDragPhysics(this.timeline.segments, tempId, newStart, newStart + newLength / 2, currentDuration, currentDuration, 1);
+          for (let shiftedSeg of result) {
+            let original = this.timeline.segments.find(s => s.id === shiftedSeg.id);
+            if (original) {
+              original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
+            }
+          }
+          let tempSeg = this.timeline.segments.find(s => s.id === tempId);
+          newStart = tempSeg.start;
+          this.timeline.segments = this.timeline.segments.filter(s => s.id !== tempId);
+        }
+
+        const seg = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+          start: newStart,
+          length: newLength,
+          prompt: "",
+          type: "image",
+          imageFolderAlias: folderAlias,
+          imageFile: image.filename,
+          imageB64: imageUrl,
+          imgObj: img,
+        };
+
+        this.timeline.segments.push(seg);
+        this.timeline.segments.sort((a, b) => a.start - b.start);
+        this.selectionType = "image";
+        this.selectedIndex = this.timeline.segments.findIndex(s => s.id === seg.id);
+        this.updateUIFromSelection();
+        this.commitChanges(true);
+        this.render();
+        resolve();
+      };
+      img.onerror = () => reject(new Error(`Could not load image: ${image.filename}`));
+      img.src = imageUrl;
+    });
   }
 
   // --- Async Image Upload Logic (Handles multiple images simultaneously) ---
@@ -3175,15 +3699,8 @@ class TimelineEditor {
       imgBtn.innerHTML = `${ICONS.upload} Image Segment`;
       imgBtn.onclick = () => {
         this.dismissContextMenu();
-        const fi = document.createElement("input");
-        fi.type = "file"; fi.accept = "image/*";
-        fi.addEventListener("change", (ev) => {
-          if (ev.target.files?.[0]) {
-            const gapLength = gap.frameEnd - gap.frameStart;
-            this.handleImageUpload([ev.target.files[0]], gap.frameStart, gapLength);
-          }
-        });
-        fi.click();
+        const gapLength = gap.frameEnd - gap.frameStart;
+        this.showTimelineImageBrowser(gap.frameStart, gapLength);
       };
       menu.appendChild(imgBtn);
     }
@@ -3221,15 +3738,8 @@ class TimelineEditor {
     imgBtn.innerHTML = `${ICONS.upload} Image Segment`;
     imgBtn.addEventListener("click", () => {
       this.dismissGapMenu();
-      const fi = document.createElement("input");
-      fi.type = "file"; fi.accept = "image/*";
-      fi.addEventListener("change", (ev) => {
-        if (ev.target.files?.[0]) {
-          const gapLength = gap.frameEnd - gap.frameStart;
-          this.handleImageUpload([ev.target.files[0]], gap.frameStart, gapLength);
-        }
-      });
-      fi.click();
+      const gapLength = gap.frameEnd - gap.frameStart;
+      this.showTimelineImageBrowser(gap.frameStart, gapLength);
     });
 
     menu.appendChild(textBtn);

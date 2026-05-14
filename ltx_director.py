@@ -24,6 +24,7 @@ from .prompt_relay import (
 )
 
 from .patches import detect_model_type, apply_patches
+from .timeline_image_config import resolve_image_path
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ GuideData = io.Custom("GUIDE_DATA")
 def _load_image_tensor(seg: dict) -> torch.Tensor:
     """Decode an image from the ComfyUI input folder (if imageFile provided) or fallback to base64
     to a ComfyUI-style image tensor of shape [1, H, W, 3], float32 in [0, 1]."""
+    if seg.get("imageFolderAlias") and seg.get("imageFile"):
+        try:
+            img = Image.open(resolve_image_path(seg["imageFolderAlias"], seg["imageFile"])).convert("RGB")
+            arr = np.array(img, dtype=np.float32) / 255.0
+            return torch.from_numpy(arr).unsqueeze(0)
+        except Exception as exc:
+            log.warning("[PromptRelay] Could not load timeline browser image %s/%s: %s", seg.get("imageFolderAlias"), seg.get("imageFile"), exc)
+
     if seg.get("imageFile"):
         file_path = os.path.join(folder_paths.get_input_directory(), seg["imageFile"])
         if os.path.exists(file_path):
