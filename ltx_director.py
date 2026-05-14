@@ -597,8 +597,10 @@ class LTXDirector(io.ComfyNode):
                 if img_compression > 0:
                     tensor = _compress_image(tensor, img_compression)
 
-                # Record dimensions of the first processed image for latent generation
-                if idx == 0:
+                # In preset mode, keep the generated latent at the selected
+                # preset size. Only input-size mode derives dimensions from
+                # the processed first guide image.
+                if idx == 0 and use_input_image_size:
                     derived_h = tensor.shape[1]
                     derived_w = tensor.shape[2]
 
