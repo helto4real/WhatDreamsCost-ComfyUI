@@ -10,7 +10,7 @@ const HANDLE_HIT_PX = 14;
 const MIN_SEGMENT_LENGTH = 6;
 const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller images
 
-const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio"];
+const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "hide_timeline_images_prompts"];
 
 function hideWidget(w) {
   if (!w) return;
@@ -603,6 +603,7 @@ class TimelineEditor {
     this._lastWidth = 0;
     this._hoveredGapIdx = -1;
     this._isHovering = false;
+    this._isNodeHovering = true;
 
     // Playback state
     this.currentFrame = 0;
@@ -632,6 +633,7 @@ class TimelineEditor {
     this.segmentLengthsWidget = this.node.widgets.find(w => w.name === "segment_lengths");
     this.guideStrengthWidget = this.node.widgets.find(w => w.name === "guide_strength");
     this.displayModeWidget = this.node.widgets.find(w => w.name === "display_mode");
+    this.hideTimelineImagesPromptsWidget = this.node.widgets.find(w => w.name === "hide_timeline_images_prompts");
 
     this.timeline = parseInitial(this.timelineDataWidget?.value);
     this.loadImages();
@@ -710,6 +712,7 @@ class TimelineEditor {
     this.pauseAudio();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
+    if (this.handleNodeHoverMouseMove) window.removeEventListener("mousemove", this.handleNodeHoverMouseMove, true);
   }
 
   getDurationFrames() {
@@ -718,6 +721,54 @@ class TimelineEditor {
 
   getFrameRate() {
     return parseInt((this.frameRateWidget && this.frameRateWidget.value > 0) ? this.frameRateWidget.value : 24, 10);
+  }
+
+  hideTimelineImagesPromptsEnabled() {
+    const value = this.hideTimelineImagesPromptsWidget?.value;
+    return value === true || value === "true";
+  }
+
+  shouldHideTimelineImagesPrompts() {
+    return this.hideTimelineImagesPromptsEnabled() && !this._isNodeHovering;
+  }
+
+  eventToGraphPos(e) {
+    const canvas = window.app?.canvas;
+    if (canvas?.convertEventToCanvasOffset) {
+      try {
+        const pos = canvas.convertEventToCanvasOffset(e);
+        if (Array.isArray(pos)) return pos;
+      } catch (err) { }
+    }
+
+    const canvasEl = canvas?.canvas;
+    const rect = canvasEl?.getBoundingClientRect?.();
+    const ds = canvas?.ds;
+    if (!rect || !ds) return null;
+
+    const scale = ds.scale || 1;
+    const offset = ds.offset || [0, 0];
+    return [
+      (e.clientX - rect.left) / scale - offset[0],
+      (e.clientY - rect.top) / scale - offset[1],
+    ];
+  }
+
+  isEventInsideNode(e) {
+    const pos = this.eventToGraphPos(e);
+    if (!pos || !this.node?.pos || !this.node?.size) return true;
+
+    const [x, y] = pos;
+    const [nodeX, nodeY] = this.node.pos;
+    const [nodeW, nodeH] = this.node.size;
+    return x >= nodeX && x <= nodeX + nodeW && y >= nodeY && y <= nodeY + nodeH;
+  }
+
+  updateNodeHoverState(e) {
+    const isHovering = this.isEventInsideNode(e);
+    if (this._isNodeHovering === isHovering) return;
+    this._isNodeHovering = isHovering;
+    if (this.hideTimelineImagesPromptsEnabled()) this.render();
   }
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
@@ -802,8 +853,17 @@ class TimelineEditor {
     this.wrapper = document.createElement("div");
     this.wrapper.className = "pr-wrapper";
 
-    this.wrapper.addEventListener("mouseenter", () => { this._isHovering = true; });
+    this.wrapper.addEventListener("mouseenter", () => {
+      this._isHovering = true;
+      if (!this._isNodeHovering) {
+        this._isNodeHovering = true;
+        if (this.hideTimelineImagesPromptsEnabled()) this.render();
+      }
+    });
     this.wrapper.addEventListener("mouseleave", () => { this._isHovering = false; });
+
+    this.handleNodeHoverMouseMove = (e) => this.updateNodeHoverState(e);
+    window.addEventListener("mousemove", this.handleNodeHoverMouseMove, true);
 
     this.handleKeyDown = (e) => {
       const activeTag = document.activeElement ? document.activeElement.tagName : "";
@@ -1794,6 +1854,7 @@ class TimelineEditor {
     });
 
     // --- Draw Image/Text Segments ---
+    const hideTimelineImagesPrompts = this.shouldHideTimelineImagesPrompts();
     for (let i = 0; i < sortedSegments.length; i++) {
       const seg = sortedSegments[i];
       const startX = (seg.start / totalFrames) * width;
@@ -1829,7 +1890,7 @@ class TimelineEditor {
         this.ctx.fillRect(startX, RULER_HEIGHT + 1, pxWidth, this.blockHeight - 2);
       }
 
-      if (imgObj && imgObj.complete && imgObj.naturalWidth > 0 && seg.type !== "ghost") {
+      if (!hideTimelineImagesPrompts && imgObj && imgObj.complete && imgObj.naturalWidth > 0 && seg.type !== "ghost") {
         const imgRatio = imgObj.naturalWidth / imgObj.naturalHeight;
         const boxRatio = pxWidth / this.blockHeight;
         let drawW, drawH, drawX, drawY;
@@ -1904,7 +1965,7 @@ class TimelineEditor {
           this.ctx.fillText(label, startX + pxWidth / 2, overlayY + overlayH / 2);
           this.ctx.restore();
         }
-      } else if (seg.type === "text") {
+      } else if (!hideTimelineImagesPrompts && seg.type === "text") {
         const pad = 8;
         const boxW = pxWidth - pad * 2;
         if (boxW > 12) {
@@ -3360,6 +3421,25 @@ class TimelineEditor {
       menu.appendChild(this._makeSettingRow("Display Mode", ctrl));
     }
 
+    // --- Hide Timeline Images/Prompts ---
+    const hideTimelineVisualsWidget = this.node.widgets?.find(w => w.name === "hide_timeline_images_prompts");
+    if (hideTimelineVisualsWidget) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = hideTimelineVisualsWidget.value === true || hideTimelineVisualsWidget.value === "true";
+      cb.style.cursor = "pointer";
+      cb.title = "Hide image thumbnails and prompt text inside the timeline.";
+      cb.addEventListener("change", () => {
+        hideTimelineVisualsWidget.value = cb.checked ? "true" : "false";
+        if (hideTimelineVisualsWidget.callback) {
+          try { hideTimelineVisualsWidget.callback(hideTimelineVisualsWidget.value, app.canvas, this.node, null, null); } catch (e) { }
+        }
+        this.render();
+        if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      });
+      menu.appendChild(this._makeSettingRow("Hide Images/Prompts", cb));
+    }
+
     const divider1 = document.createElement("hr");
     divider1.className = "pr-settings-divider";
     menu.appendChild(divider1);
@@ -3774,6 +3854,7 @@ const APPENDED_WIDGET_DEFAULTS = [
   ["timeline_data", "{}"],
   ["local_prompts", ""],
   ["segment_lengths", ""],
+  ["hide_timeline_images_prompts", "false"],
 ];
 
 app.registerExtension({
