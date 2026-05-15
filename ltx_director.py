@@ -3,6 +3,7 @@ import json
 import base64
 import io as _io
 import math
+from collections import deque
 
 import numpy as np
 import torch
@@ -110,6 +111,165 @@ def _load_image_tensor(seg: dict) -> torch.Tensor:
         return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
 
 
+def _load_video_tail_tensor(seg: dict, frame_count: int) -> torch.Tensor:
+    """Decode the final `frame_count` frames from an uploaded source video.
+    Returns a ComfyUI-style image tensor of shape [N, H, W, 3]."""
+    try:
+        frame_count = int(frame_count or 9)
+    except (TypeError, ValueError):
+        frame_count = 9
+    frame_count = max(1, min(65, frame_count))
+    video_file = seg.get("videoFile")
+    if not video_file:
+        return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+
+    file_path = os.path.join(folder_paths.get_input_directory(), video_file)
+    if not os.path.exists(file_path):
+        log.warning("[PromptRelay] Source video not found: %s", video_file)
+        return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+
+    frames = deque(maxlen=frame_count)
+    try:
+        with av.open(file_path) as container:
+            stream = container.streams.video[0]
+            for frame in container.decode(stream):
+                arr = frame.to_ndarray(format="rgb24").astype(np.float32) / 255.0
+                frames.append(torch.from_numpy(arr))
+    except Exception as exc:
+        log.warning("[PromptRelay] Could not decode source video %s: %s", video_file, exc)
+        return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+
+    if not frames:
+        return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+    return torch.stack(list(frames), dim=0)
+
+
+def _source_video_path(seg: dict) -> str | None:
+    video_file = seg.get("videoFile")
+    if not video_file:
+        return None
+    file_path = os.path.join(folder_paths.get_input_directory(), video_file)
+    if not os.path.exists(file_path):
+        log.warning("[PromptRelay] Source video not found: %s", video_file)
+        return None
+    return file_path
+
+
+def _stream_fps(stream, fallback: float) -> float:
+    for attr in ("average_rate", "base_rate", "guessed_rate"):
+        rate = getattr(stream, attr, None)
+        if rate:
+            try:
+                value = float(rate)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+    return float(fallback or 24.0)
+
+
+def _empty_audio(duration_seconds: float = 1.0, sample_rate: int = 44100, channels: int = 2) -> dict:
+    total_samples = max(1, int(math.ceil(max(0.0, duration_seconds) * sample_rate)))
+    return {
+        "waveform": torch.zeros((1, channels, total_samples), dtype=torch.float32),
+        "sample_rate": sample_rate,
+    }
+
+
+def _decode_source_video_audio(file_path: str, duration_seconds: float, target_sr: int = 44100) -> dict:
+    try:
+        clip_frames = []
+        with av.open(file_path) as container:
+            if not container.streams.audio:
+                return _empty_audio(duration_seconds, target_sr)
+
+            stream = container.streams.audio[0]
+            stream.thread_type = "AUTO"
+            resampler = av.AudioResampler(
+                format="fltp",
+                layout="stereo",
+                rate=target_sr,
+            )
+
+            for frame in container.decode(stream):
+                for resampled_frame in resampler.resample(frame):
+                    clip_frames.append(torch.from_numpy(resampled_frame.to_ndarray()))
+
+            for resampled_frame in resampler.resample(None):
+                clip_frames.append(torch.from_numpy(resampled_frame.to_ndarray()))
+
+        if not clip_frames:
+            return _empty_audio(duration_seconds, target_sr)
+
+        waveform = torch.cat(clip_frames, dim=1).to(torch.float32)
+        expected_samples = max(1, int(math.ceil(max(0.0, duration_seconds) * target_sr)))
+        if waveform.shape[1] < expected_samples:
+            pad = torch.zeros((waveform.shape[0], expected_samples - waveform.shape[1]), dtype=waveform.dtype)
+            waveform = torch.cat((waveform, pad), dim=1)
+        elif waveform.shape[1] > expected_samples:
+            waveform = waveform[:, :expected_samples]
+
+        return {"waveform": waveform.unsqueeze(0), "sample_rate": target_sr}
+    except Exception as exc:
+        log.warning("[PromptRelay] Could not decode source video audio %s: %s", os.path.basename(file_path), exc)
+        return _empty_audio(duration_seconds, target_sr)
+
+
+def _load_source_video_outputs(
+    seg: dict | None,
+    target_w: int,
+    target_h: int,
+    resize_method: str,
+    divisible_by: int,
+    fallback_frame_rate: float,
+) -> tuple[torch.Tensor, dict, float, int]:
+    """Decode the full uploaded source video for downstream stitching.
+    Returns stitch-ready image frames resized like timeline guide images, source audio, source FPS, and frame count."""
+    fallback_fps = float(fallback_frame_rate or 24.0)
+    empty_images = torch.zeros((1, max(1, target_h), max(1, target_w), 3), dtype=torch.float32)
+    if not seg:
+        return empty_images, _empty_audio(1.0), fallback_fps, 0
+
+    file_path = _source_video_path(seg)
+    if not file_path:
+        return empty_images, _empty_audio(1.0), fallback_fps, 0
+
+    frames = []
+    fps = fallback_fps
+    try:
+        with av.open(file_path) as container:
+            if not container.streams.video:
+                return empty_images, _empty_audio(1.0), fallback_fps, 0
+
+            stream = container.streams.video[0]
+            stream.thread_type = "AUTO"
+            fps = _stream_fps(stream, fallback_fps)
+
+            for frame in container.decode(stream):
+                arr = frame.to_ndarray(format="rgb24").astype(np.float32) / 255.0
+                frames.append(torch.from_numpy(arr))
+    except Exception as exc:
+        log.warning("[PromptRelay] Could not decode full source video %s: %s", seg.get("videoFile"), exc)
+        return empty_images, _empty_audio(1.0), fallback_fps, 0
+
+    if not frames:
+        return empty_images, _empty_audio(1.0), fps, 0
+
+    source_images = torch.stack(frames, dim=0)
+    frame_count = int(source_images.shape[0])
+    duration_seconds = frame_count / fps if fps > 0 else 1.0
+
+    source_images = _resize_image_frames(
+        source_images,
+        max(1, target_w),
+        max(1, target_h),
+        resize_method,
+        divisible_by,
+    )
+    source_audio = _decode_source_video_audio(file_path, duration_seconds)
+    return source_images, source_audio, fps, frame_count
+
+
 def _ltx_preset_dimensions(aspect_ratio: str, orientation: str, quality_tier: str) -> tuple[int, int]:
     presets = LTX_RESOLUTION_PRESETS.get(aspect_ratio, LTX_RESOLUTION_PRESETS["16:9"])
     try:
@@ -177,6 +337,15 @@ def _resize_image(tensor: torch.Tensor, target_w: int, target_h: int, method: st
     return torch.from_numpy(arr).unsqueeze(0)
 
 
+def _resize_image_frames(tensor: torch.Tensor, target_w: int, target_h: int, method: str, divisible_by: int) -> torch.Tensor:
+    if tensor.shape[0] <= 1:
+        return _resize_image(tensor, target_w, target_h, method, divisible_by)
+    return torch.cat([
+        _resize_image(tensor[i:i + 1], target_w, target_h, method, divisible_by)
+        for i in range(tensor.shape[0])
+    ], dim=0)
+
+
 def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
     """Apply H.264 compression artefacts to a [1, H, W, 3] float32 tensor (ComfyUI image format).
     crf=0 means no compression. Uses PyAV to encode/decode a single frame in-memory."""
@@ -221,6 +390,15 @@ def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
     except Exception as e:
         log.warning("[PromptRelay] img_compression encode/decode failed: %s", e)
         return tensor
+
+
+def _compress_image_frames(tensor: torch.Tensor, crf: int) -> torch.Tensor:
+    if tensor.shape[0] <= 1:
+        return _compress_image(tensor, crf)
+    return torch.cat([
+        _compress_image(tensor[i:i + 1], crf)
+        for i in range(tensor.shape[0])
+    ], dim=0)
 
 
 def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_rate: float) -> dict:
@@ -551,6 +729,10 @@ class LTXDirector(io.ComfyNode):
                 GuideData.Output(display_name="guide_data"),
                 io.Float.Output(display_name="frame_rate", tooltip="The frame rate used for the timeline."),
                 io.Audio.Output(display_name="combined_audio", tooltip="Combined timeline audio layout."),
+                io.Image.Output(display_name="source_video_images", tooltip="Full source video decoded as image frames and resized for stitching."),
+                io.Audio.Output(display_name="source_video_audio", tooltip="Audio decoded from the source video, or silence when absent."),
+                io.Float.Output(display_name="source_video_frame_rate", tooltip="Original frame rate decoded from the source video."),
+                io.Int.Output(display_name="source_video_frame_count", tooltip="Number of frames decoded from the source video."),
             ],
         )
 
@@ -567,12 +749,28 @@ class LTXDirector(io.ComfyNode):
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
         target_w, target_h = _ltx_preset_dimensions(aspect_ratio, orientation, quality_tier)
         derived_w, derived_h = (0, 0) if use_input_image_size else (target_w, target_h)
+        source_video_seg = None
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
+            source_video_seg = next(
+                (
+                    s for s in tdata.get("segments", [])
+                    if s.get("type") == "source_video" and s.get("videoFile")
+                ),
+                None,
+            )
             img_segs = [
                 s for s in tdata.get("segments", [])
-                if s.get("type", "image") == "image"
-                and (s.get("imageFile") or s.get("imageB64"))
+                if (
+                    (
+                        s.get("type", "image") == "image"
+                        and (s.get("imageFile") or s.get("imageB64"))
+                    )
+                    or (
+                        s.get("type") == "source_video"
+                        and s.get("videoFile")
+                    )
+                )
                 and int(s.get("start", 0)) < duration_frames  # exclude segments fully outside duration
             ]
             img_segs.sort(key=lambda s: s["start"])
@@ -582,20 +780,23 @@ class LTXDirector(io.ComfyNode):
                 strengths = [float(x.strip()) for x in guide_strength.split(",") if x.strip()]
 
             for idx, seg in enumerate(img_segs):
-                tensor = _load_image_tensor(seg)
+                if seg.get("type") == "source_video":
+                    tensor = _load_video_tail_tensor(seg, seg.get("sourceVideoGuideFrames", seg.get("length", 9)))
+                else:
+                    tensor = _load_image_tensor(seg)
 
                 # Apply resize
                 src_h, src_w = tensor.shape[1], tensor.shape[2]
 
                 if use_input_image_size:
                     # Matches the previous custom_width=0/custom_height=0 behavior.
-                    tensor = _resize_image(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
+                    tensor = _resize_image_frames(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
                 else:
-                    tensor = _resize_image(tensor, target_w, target_h, resize_method, divisible_by)
+                    tensor = _resize_image_frames(tensor, target_w, target_h, resize_method, divisible_by)
 
                 # Apply compression
                 if img_compression > 0:
-                    tensor = _compress_image(tensor, img_compression)
+                    tensor = _compress_image_frames(tensor, img_compression)
 
                 # In preset mode, keep the generated latent at the selected
                 # preset size. Only input-size mode derives dimensions from
@@ -652,6 +853,17 @@ class LTXDirector(io.ComfyNode):
 
         # --- Build Audio Output ---
         audio_out = _build_combined_audio(timeline_data, ltxv_length, float(frame_rate))
+        source_output_w = derived_w if derived_w > 0 else target_w
+        source_output_h = derived_h if derived_h > 0 else target_h
+        source_resize_method = "maintain aspect ratio" if use_input_image_size else resize_method
+        source_video_images, source_video_audio, source_video_frame_rate, source_video_frame_count = _load_source_video_outputs(
+            source_video_seg,
+            source_output_w,
+            source_output_h,
+            source_resize_method,
+            divisible_by,
+            float(frame_rate),
+        )
 
         # --- Audio Latent Generation ---
         audio_latent = {}
@@ -706,7 +918,19 @@ class LTXDirector(io.ComfyNode):
                 except Exception as e:
                     log.warning("[PromptRelay] Could not generate empty audio latent: %s", e)
 
-        return io.NodeOutput(patched, conditioning, latent, audio_latent, guide_data, float(frame_rate), audio_out)
+        return io.NodeOutput(
+            patched,
+            conditioning,
+            latent,
+            audio_latent,
+            guide_data,
+            float(frame_rate),
+            audio_out,
+            source_video_images,
+            source_video_audio,
+            float(source_video_frame_rate),
+            int(source_video_frame_count),
+        )
 
 
 NODE_CLASS_MAPPINGS = {
