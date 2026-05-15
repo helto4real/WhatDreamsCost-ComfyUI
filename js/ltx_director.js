@@ -12,7 +12,7 @@ const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller image
 const SOURCE_VIDEO_DEFAULT_GUIDE_FRAMES = 9;
 const SOURCE_VIDEO_MAX_GUIDE_FRAMES = 65;
 
-const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "hide_timeline_images_prompts"];
+const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "use_global_prompt", "hide_timeline_images_prompts"];
 
 function hideWidget(w) {
   if (!w) return;
@@ -22,6 +22,34 @@ function hideWidget(w) {
   if (!w.options) w.options = {};
   w.options.hidden = true;
   if (w.element) w.element.style.display = "none";
+}
+
+function widgetBoolValue(value) {
+  return value === true || value === "true";
+}
+
+function setWidgetBoolValue(widget, value) {
+  if (!widget) return;
+  widget.value = value ? "true" : "false";
+  if (widget.callback) {
+    try { widget.callback(widget.value, app.canvas, widget.node, null, null); } catch (e) { }
+  }
+}
+
+function applyGlobalPromptWidgetVisibility(globalPromptWidget, isVisible) {
+  if (!globalPromptWidget) return;
+  if (!globalPromptWidget.options) globalPromptWidget.options = {};
+  globalPromptWidget.options.hidden = !isVisible;
+
+  if (isVisible) {
+    delete globalPromptWidget.computeSize;
+    globalPromptWidget.hidden = false;
+    if (globalPromptWidget.element) globalPromptWidget.element.style.display = "";
+  } else {
+    globalPromptWidget.computeSize = () => [0, 0];
+    globalPromptWidget.hidden = true;
+    if (globalPromptWidget.element) globalPromptWidget.element.style.display = "none";
+  }
 }
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
@@ -877,12 +905,14 @@ class TimelineEditor {
     this.segmentLengthsWidget = this.node.widgets.find(w => w.name === "segment_lengths");
     this.guideStrengthWidget = this.node.widgets.find(w => w.name === "guide_strength");
     this.displayModeWidget = this.node.widgets.find(w => w.name === "display_mode");
+    this.useGlobalPromptWidget = this.node.widgets.find(w => w.name === "use_global_prompt");
     this.hideTimelineImagesPromptsWidget = this.node.widgets.find(w => w.name === "hide_timeline_images_prompts");
 
     this.timeline = parseInitial(this.timelineDataWidget?.value);
     this.loadImages();
 
     this.createDOM();
+    this.applyGlobalPromptVisibility();
     if (this.timeline.segments.length > 0) {
       this.selectedIndex = 0;
     }
@@ -996,6 +1026,21 @@ class TimelineEditor {
 
   getGlobalPromptWidget() {
     return this.node.widgets?.find(w => w.name === "global_prompt");
+  }
+
+  globalPromptEnabled() {
+    return widgetBoolValue(this.useGlobalPromptWidget?.value);
+  }
+
+  applyGlobalPromptVisibility() {
+    const globalPromptWidget = this.getGlobalPromptWidget();
+    const isVisible = this.globalPromptEnabled();
+    if (!isVisible) {
+      for (const element of this.getWidgetTextElements(globalPromptWidget)) {
+        this.setElementTextPrivacy(element, false);
+      }
+    }
+    applyGlobalPromptWidgetVisibility(globalPromptWidget, isVisible);
   }
 
   getWidgetTextElements(widget) {
@@ -4539,25 +4584,12 @@ class TimelineEditor {
     if (globalPromptWidget) {
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = !(globalPromptWidget.options && globalPromptWidget.options.hidden);
+      cb.checked = this.globalPromptEnabled();
       cb.style.cursor = "pointer";
       cb.addEventListener("change", () => {
         const isVisible = cb.checked;
-        if (!globalPromptWidget.options) globalPromptWidget.options = {};
-        globalPromptWidget.options.hidden = !isVisible;
-
-        if (isVisible) {
-          delete globalPromptWidget.computeSize;
-          globalPromptWidget.hidden = false;
-          if (globalPromptWidget.element) globalPromptWidget.element.style.display = "";
-        } else {
-          for (const element of this.getWidgetTextElements(globalPromptWidget)) {
-            this.setElementTextPrivacy(element, false);
-          }
-          globalPromptWidget.computeSize = () => [0, 0];
-          globalPromptWidget.hidden = true;
-          if (globalPromptWidget.element) globalPromptWidget.element.style.display = "none";
-        }
+        setWidgetBoolValue(this.useGlobalPromptWidget, isVisible);
+        this.applyGlobalPromptVisibility();
 
         // Force refresh via display mode double-toggle trick
         if (this.displayModeWidget) {
@@ -4831,6 +4863,7 @@ const APPENDED_WIDGET_DEFAULTS = [
   ["timeline_data", "{}"],
   ["local_prompts", ""],
   ["segment_lengths", ""],
+  ["use_global_prompt", "false"],
   ["hide_timeline_images_prompts", "false"],
 ];
 
@@ -4861,17 +4894,9 @@ app.registerExtension({
           compWidget.value = 18;
         }
 
-        // Hide global prompt by default on creation without destroying its DOM element
         const globalPromptWidget = this.widgets?.find(w => w.name === "global_prompt");
-        if (globalPromptWidget) {
-          if (!globalPromptWidget.options) globalPromptWidget.options = {};
-          globalPromptWidget.options.hidden = true;
-          globalPromptWidget.hidden = true;
-          globalPromptWidget.computeSize = () => [0, 0];
-          setTimeout(() => {
-            if (globalPromptWidget.element) globalPromptWidget.element.style.display = "none";
-          }, 0);
-        }
+        const useGlobalPromptWidget = this.widgets?.find(w => w.name === "use_global_prompt");
+        applyGlobalPromptWidgetVisibility(globalPromptWidget, widgetBoolValue(useGlobalPromptWidget?.value));
 
         const container = document.createElement("div");
         const widget = this.addDOMWidget("timeline_ui", "timeline_ui", container, {
@@ -4909,9 +4934,14 @@ app.registerExtension({
         }
 
         setTimeout(() => {
+          const globalPromptWidget = this.widgets?.find(w => w.name === "global_prompt");
+          const useGlobalPromptWidget = this.widgets?.find(w => w.name === "use_global_prompt");
+          applyGlobalPromptWidgetVisibility(globalPromptWidget, widgetBoolValue(useGlobalPromptWidget?.value));
           if (this._timelineEditor) {
             this._timelineEditor.timeline = parseInitial(this._timelineEditor.timelineDataWidget?.value);
             this._timelineEditor.loadImages();
+            this._timelineEditor.useGlobalPromptWidget = useGlobalPromptWidget;
+            this._timelineEditor.applyGlobalPromptVisibility();
             this._timelineEditor.selectionType = "image";
             this._timelineEditor.selectedIndex = clamp(
               this._timelineEditor.selectedIndex, -1,

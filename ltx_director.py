@@ -168,6 +168,13 @@ def _stream_fps(stream, fallback: float) -> float:
     return float(fallback or 24.0)
 
 
+def _safe_float(value, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
 def _empty_audio(duration_seconds: float = 1.0, sample_rate: int = 44100, channels: int = 2) -> dict:
     total_samples = max(1, int(math.ceil(max(0.0, duration_seconds) * sample_rate)))
     return {
@@ -720,6 +727,10 @@ class LTXDirector(io.ComfyNode):
                     "img_compression", default=18, min=0, max=100, step=1, optional=True,
                     tooltip="H.264 CRF compression to apply to each guide image. 0 = no compression, higher = more artefacts.",
                 ),
+                io.Boolean.Input(
+                    "use_global_prompt", default=False, optional=True,
+                    tooltip="Show the global prompt widget on the node.",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -743,7 +754,9 @@ class LTXDirector(io.ComfyNode):
                 use_input_image_size=False, aspect_ratio="16:9", orientation="landscape",
                 quality_tier="6 - LTX 2.3 native", resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False) -> io.NodeOutput:
+                use_custom_audio=False, use_global_prompt=False) -> io.NodeOutput:
+
+        frame_rate = _safe_float(frame_rate, 24.0)
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
@@ -852,7 +865,7 @@ class LTXDirector(io.ComfyNode):
         )
 
         # --- Build Audio Output ---
-        audio_out = _build_combined_audio(timeline_data, ltxv_length, float(frame_rate))
+        audio_out = _build_combined_audio(timeline_data, ltxv_length, frame_rate)
         source_output_w = derived_w if derived_w > 0 else target_w
         source_output_h = derived_h if derived_h > 0 else target_h
         source_resize_method = "maintain aspect ratio" if use_input_image_size else resize_method
@@ -862,7 +875,7 @@ class LTXDirector(io.ComfyNode):
             source_output_h,
             source_resize_method,
             divisible_by,
-            float(frame_rate),
+            frame_rate,
         )
 
         # --- Audio Latent Generation ---
@@ -873,7 +886,7 @@ class LTXDirector(io.ComfyNode):
             def get_empty_latent():
                 z_channels = audio_vae.latent_channels
                 audio_freq = audio_vae.first_stage_model.latent_frequency_bins
-                num_audio_latents = audio_vae.first_stage_model.num_of_latents_from_frames(ltxv_length, float(frame_rate))
+                num_audio_latents = audio_vae.first_stage_model.num_of_latents_from_frames(ltxv_length, frame_rate)
                 audio_latents = torch.zeros(
                     (1, z_channels, num_audio_latents, audio_freq),
                     device=comfy.model_management.intermediate_device(),
@@ -924,7 +937,7 @@ class LTXDirector(io.ComfyNode):
             latent,
             audio_latent,
             guide_data,
-            float(frame_rate),
+            frame_rate,
             audio_out,
             source_video_images,
             source_video_audio,
