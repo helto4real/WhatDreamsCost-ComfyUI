@@ -5,6 +5,7 @@ const { api } = window.comfyAPI.api;
 const RULER_HEIGHT = 24;
 const BLOCK_HEIGHT = 160; // Increased to make the image timeline area much taller
 const AUDIO_TRACK_HEIGHT = 80;
+const AUDIO_LANE_HEIGHT = 56;
 const CANVAS_HEIGHT = RULER_HEIGHT + BLOCK_HEIGHT + AUDIO_TRACK_HEIGHT;
 const HANDLE_HIT_PX = 14;
 const MIN_SEGMENT_LENGTH = 6;
@@ -53,6 +54,55 @@ function applyGlobalPromptWidgetVisibility(globalPromptWidget, isVisible) {
 }
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+function clampVolume(value) {
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed)) return 1.0;
+  return clamp(parsed, 0, 2);
+}
+
+function normalizeAudioLane(value) {
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function audioRangesOverlap(startA, lengthA, startB, lengthB) {
+  return startA < startB + lengthB && startB < startA + lengthA;
+}
+
+function findFreeAudioLane(audioSegments, start, length, ignoreId = null, preferredLane = null) {
+  const isLaneFree = (lane) => !audioSegments.some((seg) => (
+    seg.id !== ignoreId
+    && normalizeAudioLane(seg.lane) === lane
+    && audioRangesOverlap(start, length, seg.start || 0, seg.length || 1)
+  ));
+
+  if (preferredLane !== null && preferredLane !== undefined) {
+    const lane = normalizeAudioLane(preferredLane);
+    if (isLaneFree(lane)) return lane;
+  }
+
+  let lane = 0;
+  while (!isLaneFree(lane)) lane += 1;
+  return lane;
+}
+
+function assignMissingAudioLanes(audioSegments) {
+  const assigned = [];
+  const sorted = [...audioSegments].sort((a, b) => (a.start || 0) - (b.start || 0));
+
+  for (const seg of sorted) {
+    const hasLane = Number.isFinite(parseInt(seg.lane, 10));
+    if (hasLane) {
+      seg.lane = normalizeAudioLane(seg.lane);
+    } else {
+      seg.lane = findFreeAudioLane(assigned, seg.start || 0, seg.length || 1);
+    }
+    assigned.push(seg);
+  }
+
+  return audioSegments;
+}
 
 function timelineNodeInnerWidth(node) {
   return Math.max((node?.size?.[0] || 390) - 28, 320);
@@ -839,7 +889,9 @@ function parseInitial(jsonStr) {
       seg.id = Date.now().toString() + Math.random().toString(36).substr(2, 5);
     }
     if (seg.trimStart === undefined) seg.trimStart = 0;
+    seg.volume = clampVolume(seg.volume);
   }
+  assignMissingAudioLanes(parsed.audioSegments);
 
   return parsed;
 }
@@ -909,6 +961,7 @@ class TimelineEditor {
     this.hideTimelineImagesPromptsWidget = this.node.widgets.find(w => w.name === "hide_timeline_images_prompts");
 
     this.timeline = parseInitial(this.timelineDataWidget?.value);
+    this.ensureAudioTrackHeight();
     this.loadImages();
 
     this.createDOM();
@@ -995,6 +1048,51 @@ class TimelineEditor {
 
   getFrameRate() {
     return parseInt((this.frameRateWidget && this.frameRateWidget.value > 0) ? this.frameRateWidget.value : 24, 10);
+  }
+
+  getAudioLaneCount(audioSegments = this.timeline.audioSegments) {
+    let maxLane = 0;
+    for (const seg of audioSegments || []) {
+      maxLane = Math.max(maxLane, normalizeAudioLane(seg.lane));
+    }
+    return maxLane + 1;
+  }
+
+  getRequiredAudioTrackHeight(audioSegments = this.timeline.audioSegments) {
+    return Math.max(AUDIO_TRACK_HEIGHT, this.getAudioLaneCount(audioSegments) * AUDIO_LANE_HEIGHT);
+  }
+
+  ensureAudioTrackHeight(audioSegments = this.timeline.audioSegments) {
+    const requiredHeight = this.getRequiredAudioTrackHeight(audioSegments);
+    if (requiredHeight <= this.audioTrackHeight) return false;
+
+    this.audioTrackHeight = requiredHeight;
+    this.canvasHeight = this.rulerHeight + this.blockHeight + this.audioTrackHeight;
+
+    if (this.canvas) {
+      this.canvas.style.height = `${this.canvasHeight}px`;
+      const width = this.canvas.offsetWidth || this._lastWidth || timelineNodeInnerWidth(this.node);
+      this.resizeCanvas(width);
+    }
+
+    return true;
+  }
+
+  getAudioLaneForY(y) {
+    const relY = y - (RULER_HEIGHT + this.blockHeight);
+    return Math.max(0, Math.min(64, Math.floor(relY / AUDIO_LANE_HEIGHT)));
+  }
+
+  getAudioSegmentY(seg) {
+    return RULER_HEIGHT + this.blockHeight + normalizeAudioLane(seg.lane) * AUDIO_LANE_HEIGHT;
+  }
+
+  getAudioClipHeight() {
+    return Math.max(24, AUDIO_LANE_HEIGHT - 6);
+  }
+
+  findFreeAudioLane(start, length, ignoreId = null, preferredLane = null, audioSegments = this.timeline.audioSegments) {
+    return findFreeAudioLane(audioSegments, start, length, ignoreId, preferredLane);
   }
 
   hideTimelineImagesPromptsEnabled() {
@@ -1275,7 +1373,7 @@ class TimelineEditor {
     this.audioFileInput.accept = "audio/*";
     this.audioFileInput.multiple = true;
     this.audioFileInput.style.display = "none";
-    this.audioFileInput.addEventListener("change", (e) => this.handleAudioUpload(e.target.files));
+    this.audioFileInput.addEventListener("change", (e) => this.handleAudioUpload(e.target.files, Math.round(this.currentFrame || 0)));
 
     this.videoSourceInput = document.createElement("input");
     this.videoSourceInput.type = "file";
@@ -1456,7 +1554,7 @@ class TimelineEditor {
 
     this.canvas.addEventListener("mousedown", this.onMouseDown.bind(this));
     this.canvas.addEventListener("contextmenu", this.onContextMenu.bind(this));
-    this.canvas.style.height = `${CANVAS_HEIGHT}px`;
+    this.canvas.style.height = `${this.canvasHeight}px`;
 
     // --- Content Area Container ---
     const propContainer = document.createElement("div");
@@ -1497,6 +1595,7 @@ class TimelineEditor {
       const isAudioTrack = y > RULER_HEIGHT + this.blockHeight;
       const trackType = isAudioTrack ? "audio" : "image";
       const arrToModify = isAudioTrack ? this.timeline.audioSegments : this.timeline.segments;
+      const targetAudioLane = isAudioTrack ? this.getAudioLaneForY(y) : 0;
 
       if (!this._ghostSegmentId || this._ghostTrack !== trackType) {
         this._ghostSegmentId = "GHOST_" + Date.now();
@@ -1513,6 +1612,7 @@ class TimelineEditor {
           id: this._ghostSegmentId,
           start: startFrame,
           length: newLength,
+          lane: targetAudioLane,
           type: "ghost"
         });
       }
@@ -1521,15 +1621,24 @@ class TimelineEditor {
       const ghost = this._ghostInitialTimeline.find(s => s.id === this._ghostSegmentId);
       let D_mouse_start = mouseFrameX - ghost.length / 2;
 
-      this._previewSegments = this._applyCenterDragPhysics(
-        this._ghostInitialTimeline,
-        this._ghostSegmentId,
-        D_mouse_start,
-        mouseFrameX,
-        totalFrames,
-        totalFrames,
-        logicalWidth
-      );
+      if (trackType === "audio") {
+        const ghostStart = clamp(Math.round(D_mouse_start), 0, totalFrames - ghost.length);
+        const ghostLane = this.findFreeAudioLane(ghostStart, ghost.length, ghost.id, targetAudioLane, this._ghostInitialTimeline);
+        this._previewSegments = this._ghostInitialTimeline.map((seg) => (
+          seg.id === this._ghostSegmentId ? { ...seg, start: ghostStart, resolvedStart: ghostStart, lane: ghostLane } : seg
+        ));
+        this.ensureAudioTrackHeight(this._previewSegments);
+      } else {
+        this._previewSegments = this._applyCenterDragPhysics(
+          this._ghostInitialTimeline,
+          this._ghostSegmentId,
+          D_mouse_start,
+          mouseFrameX,
+          totalFrames,
+          totalFrames,
+          logicalWidth
+        );
+      }
       this.render();
     });
 
@@ -1552,12 +1661,14 @@ class TimelineEditor {
       this.wrapper.classList.remove("drag-active");
 
       let targetFrameStart = null;
+      let targetAudioLane = null;
       let targetTrack = this._ghostTrack || "image";
 
       if (this._ghostSegmentId && this._previewSegments) {
         const ghost = this._previewSegments.find(s => s.id === this._ghostSegmentId);
         if (ghost) {
           targetFrameStart = ghost.resolvedStart !== undefined ? ghost.resolvedStart : ghost.start;
+          targetAudioLane = normalizeAudioLane(ghost.lane);
         }
       }
       this._ghostSegmentId = null;
@@ -1577,7 +1688,7 @@ class TimelineEditor {
         // Let implicit intent handle mixing drops: use the track we hovered over
         // for the first type we process, or fallback.
         if (audioFiles.length > 0 && (targetTrack === "audio" || imageFiles.length === 0)) {
-          this.handleAudioUpload(audioFiles, targetFrameStart);
+          this.handleAudioUpload(audioFiles, targetFrameStart, targetAudioLane);
         } else if (imageFiles.length > 0) {
           this.handleImageUpload(imageFiles, targetFrameStart);
         }
@@ -1704,9 +1815,9 @@ class TimelineEditor {
     this.strengthRow = document.createElement("div");
     this.strengthRow.className = "pr-strength-row";
 
-    const strengthLabel = document.createElement("span");
-    strengthLabel.className = "pr-strength-label";
-    strengthLabel.textContent = "Guide Strength:";
+    this.strengthLabel = document.createElement("span");
+    this.strengthLabel.className = "pr-strength-label";
+    this.strengthLabel.textContent = "Guide Strength:";
 
     this.strengthValue = document.createElement("input");
     this.strengthValue.type = "text";
@@ -1758,13 +1869,19 @@ class TimelineEditor {
           moveEvent.preventDefault();
           const sensitivity = 0.002;
           let newVal = startVal + deltaX * sensitivity;
+          const maxVal = this.selectionType === "audio" ? 2 : 1;
 
           if (newVal < 0) newVal = 0;
-          if (newVal > 1) newVal = 1;
+          if (newVal > maxVal) newVal = maxVal;
 
           this.strengthValue.value = newVal.toFixed(2);
 
-          if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
+          if (this.selectionType === "audio" && this.timeline.audioSegments[this.selectedIndex]) {
+            const seg = this.timeline.audioSegments[this.selectedIndex];
+            seg.volume = newVal;
+            this.commitChanges();
+            this.updateUIFromSelection();
+          } else if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
             const seg = this.timeline.segments[this.selectedIndex];
             if (seg.type !== "text") {
               seg.guideStrength = newVal;
@@ -1792,9 +1909,15 @@ class TimelineEditor {
     this.strengthValue.addEventListener("change", (e) => {
       let val = parseFloat(e.target.value);
       if (isNaN(val)) val = 1;
-      val = Math.max(0, Math.min(1, val));
+      const maxVal = this.selectionType === "audio" ? 2 : 1;
+      val = Math.max(0, Math.min(maxVal, val));
       this.strengthValue.value = val.toFixed(2);
-      if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
+      if (this.selectionType === "audio" && this.timeline.audioSegments[this.selectedIndex]) {
+        const seg = this.timeline.audioSegments[this.selectedIndex];
+        seg.volume = val;
+        this.commitChanges();
+        this.updateUIFromSelection();
+      } else if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
         const seg = this.timeline.segments[this.selectedIndex];
         if (seg.type !== "text") {
           seg.guideStrength = val;
@@ -1805,7 +1928,7 @@ class TimelineEditor {
 
     this.strengthRow.appendChild(this.timeCodeDisplay);
     this.strengthRow.appendChild(this.segmentBoundsDisplay);
-    this.strengthRow.appendChild(strengthLabel);
+    this.strengthRow.appendChild(this.strengthLabel);
     this.strengthRow.appendChild(this.strengthValue);
     this.strengthRow.appendChild(this.sourceVideoFramesLabel);
     this.strengthRow.appendChild(this.sourceVideoFramesInput);
@@ -2527,9 +2650,12 @@ class TimelineEditor {
   }
 
   // --- Async Audio Upload Logic ---
-  async handleAudioUpload(files, targetFrameStart = null) {
+  async handleAudioUpload(files, targetFrameStart = null, targetLane = null) {
     const frameRate = this.getFrameRate();
-    const durationFrames = this.getDurationFrames();
+    const visualDurationFrames = this.getVisualDurationFrames();
+    const insertFrame = targetFrameStart === null
+      ? Math.round(this.currentFrame || 0)
+      : Math.round(targetFrameStart || 0);
 
     for (let file of files) {
       if (!file.type.startsWith("audio/")) continue;
@@ -2566,55 +2692,28 @@ class TimelineEditor {
           }
 
           let newLength = clipFrames;
-          let newStart = targetFrameStart;
-
-          if (newStart === null) {
-            // Find the first free slot, or place past the end of all existing audio
-            newStart = 0;
-            this.timeline.audioSegments.sort((a, b) => a.start - b.start);
-            for (let i = 0; i < this.timeline.audioSegments.length; i++) {
-              let seg = this.timeline.audioSegments[i];
-              if (newStart + newLength <= seg.start) break;
-              newStart = Math.max(newStart, seg.start + seg.length);
-            }
-          }
-
-          // Use the visual timeline as the physics bound so segments can
-          // land anywhere in the padded visual area without touching duration_frames.
-          const currentDuration = this.getVisualDurationFrames();
-
-          if (targetFrameStart !== null) {
-            let tempId = "TEMP_" + Date.now();
-            this.timeline.audioSegments.push({ id: tempId, start: newStart, length: newLength, type: "temp" });
-            let result = this._applyCenterDragPhysics(this.timeline.audioSegments, tempId, newStart, newStart + newLength / 2, currentDuration, currentDuration, 1);
-
-            for (let shiftedSeg of result) {
-              let original = this.timeline.audioSegments.find(s => s.id === shiftedSeg.id);
-              if (original) original.start = shiftedSeg.resolvedStart !== undefined ? shiftedSeg.resolvedStart : shiftedSeg.start;
-            }
-
-            let tempSeg = this.timeline.audioSegments.find(s => s.id === tempId);
-            newStart = tempSeg.start;
-            this.timeline.audioSegments = this.timeline.audioSegments.filter(s => s.id !== tempId);
-            targetFrameStart = newStart + newLength;
-          }
+          let newStart = clamp(insertFrame, 0, Math.max(0, visualDurationFrames - 1));
 
           // Use the full clip length — timeline has already grown to fit.
           let constrainedLength = newLength;
+          let newLane = this.findFreeAudioLane(newStart, constrainedLength, null, targetLane);
 
           const seg = {
             id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
             type: "audio",
             start: newStart,
             length: constrainedLength,
+            lane: newLane,
             trimStart: 0,
             audioDurationFrames: clipFrames,
             audioFile: audioFile,
             fileName: file.name,
+            volume: 1.0,
             waveformPeaks: peaks
           };
 
           this.timeline.audioSegments.push(seg);
+          this.ensureAudioTrackHeight();
           this.timeline.audioSegments.sort((a, b) => a.start - b.start);
           this.selectionType = "audio";
           this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
@@ -2722,19 +2821,24 @@ class TimelineEditor {
       this.promptInput.style.display = "none";
       this.strengthRow.style.display = "flex";
       this.audioInfoArea.style.display = "block";
+      const volume = clampVolume(seg.volume);
+      seg.volume = volume;
       this.audioInfoArea.innerHTML = `
         File: <span>${seg.fileName || "Unknown"}</span><br>
         Length: <span>${this.formatTime(seg.audioDurationFrames)}</span> Output Length: <span>${this.formatTime(seg.length)}</span><br>
-        Trim-in: <span>${this.formatTime(Math.round(seg.trimStart))}</span> Trim-Out: <span>${this.formatTime(Math.round(seg.audioDurationFrames - (seg.trimStart + seg.length)))}</span>
+        Trim-in: <span>${this.formatTime(Math.round(seg.trimStart))}</span> Trim-Out: <span>${this.formatTime(Math.round(seg.audioDurationFrames - (seg.trimStart + seg.length)))}</span><br>
+        Volume: <span>${volume.toFixed(2)}x</span> Lane: <span>${normalizeAudioLane(seg.lane) + 1}</span>
       `;
-      this.strengthValue.value = "1.00";
-      this.strengthValue.disabled = true;
+      if (this.strengthLabel) this.strengthLabel.textContent = "Volume:";
+      this.strengthValue.value = volume.toFixed(2);
+      this.strengthValue.disabled = false;
       this.sourceVideoFramesLabel.style.display = "none";
       this.sourceVideoFramesInput.style.display = "none";
     } else {
       this.audioInfoArea.style.display = "none";
       this.promptInput.style.display = "block";
       this.strengthRow.style.display = "flex";
+      if (this.strengthLabel) this.strengthLabel.textContent = "Guide Strength:";
 
       if (seg) {
         this.promptInput.value = seg.prompt || "";
@@ -2752,6 +2856,7 @@ class TimelineEditor {
       } else {
         this.promptInput.value = "";
         this.promptInput.disabled = true;
+        if (this.strengthLabel) this.strengthLabel.textContent = "Guide Strength:";
         this.strengthValue.value = "1.00";
         this.strengthValue.disabled = true;
         this.sourceVideoFramesLabel.style.display = "none";
@@ -2829,8 +2934,22 @@ class TimelineEditor {
     const sortedAudioSegments = [...renderAudioSegments].sort((a, b) => {
       const aSel = isAudioSelection && a.id === activeAudioSegId;
       const bSel = isAudioSelection && b.id === activeAudioSegId;
-      return aSel - bSel;
+      if (aSel !== bSel) return aSel ? 1 : -1;
+      const laneDiff = normalizeAudioLane(a.lane) - normalizeAudioLane(b.lane);
+      return laneDiff || ((a.start || 0) - (b.start || 0));
     });
+
+    const audioTrackY = RULER_HEIGHT + this.blockHeight;
+    const audioLaneCount = this.getAudioLaneCount(renderAudioSegments);
+    for (let lane = 0; lane < audioLaneCount; lane++) {
+      const laneY = audioTrackY + lane * AUDIO_LANE_HEIGHT;
+      this.ctx.fillStyle = lane % 2 === 0 ? "rgba(255,255,255,0.015)" : "rgba(255,255,255,0.035)";
+      this.ctx.fillRect(0, laneY, width, AUDIO_LANE_HEIGHT);
+      if (lane > 0) {
+        this.ctx.fillStyle = "rgba(255,255,255,0.08)";
+        this.ctx.fillRect(0, laneY, width, 1);
+      }
+    }
 
     // --- Draw Image/Text Segments ---
     const hideTimelineImagesPrompts = this.shouldHideTimelineImagesPrompts();
@@ -3032,7 +3151,8 @@ class TimelineEditor {
       const startX = (seg.start / totalFrames) * width;
       const pxWidth = (seg.length / totalFrames) * width;
       const isSelected = (this.selectionType === "audio" && seg.id === activeAudioSegId);
-      const trackY = RULER_HEIGHT + this.blockHeight;
+      const trackY = this.getAudioSegmentY(seg);
+      const clipHeight = this.getAudioClipHeight();
 
       if ((this._isDragging && this.selectionType === "audio" && seg.id === this._dragTargetId) || (this._ghostSegmentId && seg.id === this._ghostSegmentId)) {
         this.ctx.globalAlpha = 0.65;
@@ -3042,19 +3162,19 @@ class TimelineEditor {
 
       if (seg.type === "ghost") {
         this.ctx.fillStyle = "#1a1a1a";
-        this.ctx.fillRect(startX, trackY, pxWidth, this.audioTrackHeight);
+        this.ctx.fillRect(startX, trackY + 3, pxWidth, clipHeight);
         this.ctx.strokeStyle = "#555";
         this.ctx.lineWidth = 2;
         this.ctx.setLineDash([5, 5]);
-        this.ctx.strokeRect(startX, trackY, pxWidth, this.audioTrackHeight);
+        this.ctx.strokeRect(startX, trackY + 3, pxWidth, clipHeight);
         this.ctx.setLineDash([]);
         this.ctx.fillStyle = "#888";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
         this.ctx.font = "bold 12px sans-serif";
-        this.ctx.fillText("Drop Audio", startX + pxWidth / 2, trackY + this.audioTrackHeight / 2);
+        this.ctx.fillText("Drop Audio", startX + pxWidth / 2, trackY + AUDIO_LANE_HEIGHT / 2);
       } else {
-        this.drawAudioSegmentVisuals(this.ctx, seg, isSelected, trackY, this.audioTrackHeight, startX, pxWidth);
+        this.drawAudioSegmentVisuals(this.ctx, seg, isSelected, trackY, clipHeight, startX, pxWidth);
       }
       this.ctx.globalAlpha = 1.0;
     }
@@ -3241,11 +3361,11 @@ class TimelineEditor {
   }
 
   drawAudioSegmentVisuals(ctx, seg, isSelected, yOffset, trackHeight, startX, pxWidth) {
-    ctx.fillStyle = isSelected ? "#2a4a3a" : "#1a2a1a";
+    ctx.fillStyle = isSelected ? "rgba(42, 74, 58, 0.88)" : "rgba(26, 42, 26, 0.62)";
     ctx.fillRect(startX, yOffset + 2, pxWidth, trackHeight - 3);
 
     if (seg.waveformPeaks && pxWidth > 0) {
-      ctx.fillStyle = isSelected ? "rgba(100, 255, 100, 0.6)" : "rgba(100, 255, 100, 0.3)";
+      ctx.fillStyle = isSelected ? "rgba(100, 255, 100, 0.72)" : "rgba(100, 255, 100, 0.38)";
       const startRatio = seg.trimStart / seg.audioDurationFrames;
       const endRatio = (seg.trimStart + seg.length) / seg.audioDurationFrames;
       const peakCount = seg.waveformPeaks.length;
@@ -3288,7 +3408,7 @@ class TimelineEditor {
     ctx.rect(startX, yOffset + 2, pxWidth, trackHeight - 3);
     ctx.clip();
 
-    let text = seg.fileName || "Audio Track";
+    let text = `${seg.fileName || "Audio Track"} · ${clampVolume(seg.volume).toFixed(2)}x`;
     const maxWidth = pxWidth - 12;
     if (ctx.measureText(text).width > maxWidth && maxWidth > 0) {
       while (text.length > 0 && ctx.measureText(text + "...").width > maxWidth) {
@@ -3339,18 +3459,23 @@ class TimelineEditor {
       const startX = (seg.start / totalFrames) * width;
       const pxWidth = (seg.length / totalFrames) * width;
       const endX = startX + pxWidth;
+      if (trackType === "audio") {
+        const segY = this.getAudioSegmentY(seg);
+        const segH = this.getAudioClipHeight();
+        if (mouseY < segY + 3 || mouseY > segY + 3 + segH) continue;
+      }
 
       const prevSeg = sortedSegments[i - 1];
       const nextSeg = sortedSegments[i + 1];
 
-      const isLeftJoint = prevSeg && prevSeg.start + prevSeg.length === seg.start;
+      const isLeftJoint = trackType !== "audio" && prevSeg && prevSeg.start + prevSeg.length === seg.start;
       if (!isLeftJoint) {
         if (Math.abs(mouseX - startX) <= HANDLE_HIT_PX) {
           return { type: "edge", index: seg.originalIndex, dir: "left", track: trackType };
         }
       }
 
-      const isRightJoint = nextSeg && nextSeg.start === seg.start + seg.length;
+      const isRightJoint = trackType !== "audio" && nextSeg && nextSeg.start === seg.start + seg.length;
       if (isRightJoint) {
         const dx = mouseX - endX;
         if (Math.abs(dx) <= HANDLE_HIT_PX) {
@@ -3369,11 +3494,17 @@ class TimelineEditor {
       }
     }
 
-    for (let i = 0; i < sortedSegments.length; i++) {
-      const seg = sortedSegments[i];
+    const centerHitSegments = trackType === "audio" ? [...sortedSegments].reverse() : sortedSegments;
+    for (let i = 0; i < centerHitSegments.length; i++) {
+      const seg = centerHitSegments[i];
       const startX = (seg.start / totalFrames) * width;
       const pxWidth = (seg.length / totalFrames) * width;
       const endX = startX + pxWidth;
+      if (trackType === "audio") {
+        const segY = this.getAudioSegmentY(seg);
+        const segH = this.getAudioClipHeight();
+        if (mouseY < segY + 3 || mouseY > segY + 3 + segH) continue;
+      }
 
       if (mouseX >= startX && mouseX < endX) {
         return { type: "center", index: seg.originalIndex, track: trackType };
@@ -3428,7 +3559,7 @@ class TimelineEditor {
         if (dx * dx + dy2 * dy2 <= BTN_R * BTN_R) {
           if (gap.track === "audio") {
             // Direct to audio upload
-            this.promptAddAudioInGap(gap.frameStart, gap.frameEnd);
+            this.promptAddAudioInGap(gap.frameStart, gap.frameEnd, gap.lane);
           } else {
             this.showGapMenu(e.clientX, e.clientY, gap);
           }
@@ -3507,7 +3638,11 @@ class TimelineEditor {
     this._isDragging = true;
     this._previewSegments = null;
     this._dragStartX = x;
+    this._dragStartY = y;
     this._dragInitialTimeline = JSON.parse(JSON.stringify(targetArray));
+    this._dragInitialLane = hit.track === "audio" && hit.index !== undefined
+      ? normalizeAudioLane(targetArray[hit.index]?.lane)
+      : 0;
 
     if (hit.type !== "joint") {
       this._dragTargetId = targetArray[hit.index].id;
@@ -3564,7 +3699,7 @@ class TimelineEditor {
       const deltaY = mouseY - this._startY;
 
       const minBlockH = 50;
-      const minAudioH = 50;
+      const minAudioH = Math.max(50, this.getRequiredAudioTrackHeight());
 
       let newBlockHeight = this._startBlockHeight + deltaY;
       let newAudioTrackHeight = this._startAudioTrackHeight - deltaY;
@@ -3683,13 +3818,22 @@ class TimelineEditor {
       if (this._dragType === "right") {
         let newLen = t[targetIdx].length + dragDelta;
         let maxPossibleLength = totalFrames - t[targetIdx].start;
-        let nextSeg = t.find(s => s.start >= t[targetIdx].start + t[targetIdx].length && s.id !== t[targetIdx].id);
-        if (nextSeg) {
-          maxPossibleLength = nextSeg.start - t[targetIdx].start;
+        if (this.selectionType !== "audio") {
+          let nextSeg = t.find(s => s.start >= t[targetIdx].start + t[targetIdx].length && s.id !== t[targetIdx].id);
+          if (nextSeg) {
+            maxPossibleLength = nextSeg.start - t[targetIdx].start;
+          }
         }
 
         if (this.selectionType === "audio") {
           maxPossibleLength = Math.min(maxPossibleLength, (t[targetIdx].audioDurationFrames || t[targetIdx].length) - (t[targetIdx].trimStart || 0));
+          const lane = normalizeAudioLane(t[targetIdx].lane);
+          const nextSeg = t
+            .filter(s => s.id !== t[targetIdx].id && normalizeAudioLane(s.lane) === lane && s.start >= t[targetIdx].start)
+            .sort((a, b) => a.start - b.start)[0];
+          if (nextSeg) {
+            maxPossibleLength = Math.min(maxPossibleLength, nextSeg.start - t[targetIdx].start);
+          }
         }
 
         t[targetIdx].length = Math.max(MIN_SEGMENT_LENGTH, Math.min(newLen, maxPossibleLength));
@@ -3697,13 +3841,22 @@ class TimelineEditor {
       } else if (this._dragType === "left") {
         let newStart = t[targetIdx].start + dragDelta;
         let minPossibleStart = 0;
-        let prevSeg = t.slice().reverse().find(s => s.start + s.length <= t[targetIdx].start && s.id !== t[targetIdx].id);
-        if (prevSeg) {
-          minPossibleStart = prevSeg.start + prevSeg.length;
+        if (this.selectionType !== "audio") {
+          let prevSeg = t.slice().reverse().find(s => s.start + s.length <= t[targetIdx].start && s.id !== t[targetIdx].id);
+          if (prevSeg) {
+            minPossibleStart = prevSeg.start + prevSeg.length;
+          }
         }
 
         if (this.selectionType === "audio") {
           minPossibleStart = Math.max(minPossibleStart, t[targetIdx].start - (t[targetIdx].trimStart || 0));
+          const lane = normalizeAudioLane(t[targetIdx].lane);
+          const prevSeg = t
+            .filter(s => s.id !== t[targetIdx].id && normalizeAudioLane(s.lane) === lane && s.start + s.length <= t[targetIdx].start)
+            .sort((a, b) => (b.start + b.length) - (a.start + a.length))[0];
+          if (prevSeg) {
+            minPossibleStart = Math.max(minPossibleStart, prevSeg.start + prevSeg.length);
+          }
         }
 
         let maxStart = t[targetIdx].start + t[targetIdx].length - MIN_SEGMENT_LENGTH;
@@ -3725,7 +3878,20 @@ class TimelineEditor {
         let D_mouse_start = D.start + dragDelta;
         let mouseFrameX = mouseX * (totalFrames / logicalWidth);
 
-        t = this._applyCenterDragPhysics(initT, D.id, D_mouse_start, mouseFrameX, durationFrames, totalFrames, logicalWidth);
+        if (this.selectionType === "audio") {
+          t = JSON.parse(JSON.stringify(initT));
+          const audioIdx = t.findIndex(s => s.id === D.id);
+          if (audioIdx >= 0) {
+            const newStart = clamp(Math.round(D_mouse_start), 0, Math.max(0, durationFrames - t[audioIdx].length));
+            const laneDelta = Math.round((mouseY - this._dragStartY) / AUDIO_LANE_HEIGHT);
+            const preferredLane = Math.max(0, this._dragInitialLane + laneDelta);
+            t[audioIdx].start = newStart;
+            t[audioIdx].lane = this.findFreeAudioLane(newStart, t[audioIdx].length, t[audioIdx].id, preferredLane, t);
+          }
+          this.ensureAudioTrackHeight(t);
+        } else {
+          t = this._applyCenterDragPhysics(initT, D.id, D_mouse_start, mouseFrameX, durationFrames, totalFrames, logicalWidth);
+        }
       }
     }
 
@@ -3830,6 +3996,7 @@ class TimelineEditor {
 
         if (this.selectionType === "audio") {
           this.timeline.audioSegments = mappedArray;
+          this.ensureAudioTrackHeight();
           if (this._dragTargetId) this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === this._dragTargetId);
         } else {
           this.timeline.segments = mappedArray;
@@ -3903,7 +4070,11 @@ class TimelineEditor {
         const { imgObj, ...rest } = s;
         return rest;
       }),
-      audioSegments: (this.timeline.audioSegments || []).map(s => ({ ...s }))
+      audioSegments: (this.timeline.audioSegments || []).map(s => ({
+        ...s,
+        lane: normalizeAudioLane(s.lane),
+        volume: clampVolume(s.volume)
+      }))
     };
 
     const jsonStr = JSON.stringify(toSave);
@@ -3954,7 +4125,7 @@ class TimelineEditor {
         const x1 = (seg.start / totalFrames) * width;
         gaps.push({ track: 'image', frameStart: cursor, frameEnd: seg.start, centerX: (x0 + x1) / 2, centerY: RULER_HEIGHT + this.blockHeight / 2, widthPx: x1 - x0 });
       }
-      cursor = seg.start + seg.length;
+      cursor = Math.max(cursor, seg.start + seg.length);
     }
     if (cursor < outputFrames) {
       const x0 = (cursor / totalFrames) * width;
@@ -3963,31 +4134,37 @@ class TimelineEditor {
     }
 
     // Audio gaps
-    cursor = 0;
-    const sortedAud = [...this.timeline.audioSegments].sort((a, b) => a.start - b.start);
-    for (const seg of sortedAud) {
-      if (seg.start > cursor) {
-        const x0 = (cursor / totalFrames) * width;
-        const x1 = (seg.start / totalFrames) * width;
-        gaps.push({ track: 'audio', frameStart: cursor, frameEnd: seg.start, centerX: (x0 + x1) / 2, centerY: RULER_HEIGHT + this.blockHeight + this.audioTrackHeight / 2, widthPx: x1 - x0 });
+    const visibleAudioLanes = Math.max(this.getAudioLaneCount(), Math.floor(this.audioTrackHeight / AUDIO_LANE_HEIGHT));
+    for (let lane = 0; lane < visibleAudioLanes; lane++) {
+      cursor = 0;
+      const sortedAud = [...this.timeline.audioSegments]
+        .filter((seg) => normalizeAudioLane(seg.lane) === lane)
+        .sort((a, b) => a.start - b.start);
+      const centerY = RULER_HEIGHT + this.blockHeight + lane * AUDIO_LANE_HEIGHT + AUDIO_LANE_HEIGHT / 2;
+      for (const seg of sortedAud) {
+        if (seg.start > cursor) {
+          const x0 = (cursor / totalFrames) * width;
+          const x1 = (seg.start / totalFrames) * width;
+          gaps.push({ track: 'audio', lane, frameStart: cursor, frameEnd: seg.start, centerX: (x0 + x1) / 2, centerY, widthPx: x1 - x0 });
+        }
+        cursor = Math.max(cursor, seg.start + seg.length);
       }
-      cursor = seg.start + seg.length;
-    }
-    if (cursor < outputFrames) {
-      const x0 = (cursor / totalFrames) * width;
-      const x1 = (outputFrames / totalFrames) * width;
-      gaps.push({ track: 'audio', frameStart: cursor, frameEnd: outputFrames, centerX: (x0 + x1) / 2, centerY: RULER_HEIGHT + this.blockHeight + this.audioTrackHeight / 2, widthPx: x1 - x0 });
+      if (cursor < outputFrames) {
+        const x0 = (cursor / totalFrames) * width;
+        const x1 = (outputFrames / totalFrames) * width;
+        gaps.push({ track: 'audio', lane, frameStart: cursor, frameEnd: outputFrames, centerX: (x0 + x1) / 2, centerY, widthPx: x1 - x0 });
+      }
     }
 
     return gaps;
   }
 
-  promptAddAudioInGap(frameStart, frameEnd) {
+  promptAddAudioInGap(frameStart, frameEnd, lane = 0) {
     const fi = document.createElement("input");
     fi.type = "file";
     fi.accept = "audio/*";
     fi.addEventListener("change", (ev) => {
-      if (ev.target.files?.[0]) this.handleAudioUpload([ev.target.files[0]], frameStart);
+      if (ev.target.files?.[0]) this.handleAudioUpload([ev.target.files[0]], frameStart, lane);
     });
     fi.click();
   }
@@ -4009,7 +4186,11 @@ class TimelineEditor {
     let trackType = "";
 
     if (isAudioTrack) {
-      clickedSeg = this.timeline.audioSegments.find(s => cursor >= s.start && cursor <= s.start + s.length);
+      clickedSeg = [...this.timeline.audioSegments].reverse().find(s => {
+        const segY = this.getAudioSegmentY(s);
+        const segH = this.getAudioClipHeight();
+        return cursor >= s.start && cursor <= s.start + s.length && mouseY >= segY + 3 && mouseY <= segY + 3 + segH;
+      });
       trackType = "audio";
     } else if (isImageTrack) {
       clickedSeg = this.timeline.segments.find(s => cursor >= s.start && cursor <= s.start + s.length);
@@ -4021,12 +4202,19 @@ class TimelineEditor {
     } else if (isAudioTrack || isImageTrack) {
       const gapRegions = this.getGapRegions();
       const currentTrack = isAudioTrack ? "audio" : "image";
-      let gap = gapRegions.find(g => cursor >= g.frameStart && cursor <= g.frameEnd && g.track === currentTrack);
+      const currentLane = isAudioTrack ? this.getAudioLaneForY(mouseY) : 0;
+      let gap = gapRegions.find(g => (
+        cursor >= g.frameStart
+        && cursor <= g.frameEnd
+        && g.track === currentTrack
+        && (!isAudioTrack || normalizeAudioLane(g.lane) === currentLane)
+      ));
 
       if (!gap) {
         const startFrame = Math.round(cursor);
         gap = {
           track: currentTrack,
+          lane: currentLane,
           frameStart: startFrame,
           frameEnd: startFrame + Math.max(1, this.getFrameRate())
         };
@@ -4122,15 +4310,20 @@ class TimelineEditor {
       pasteReplaceBtn.className = "pr-gap-menu-btn";
       pasteReplaceBtn.innerHTML = `Paste & Replace`;
       pasteReplaceBtn.onclick = () => {
+        const targetArray = currentTrack === "audio" ? this.timeline.audioSegments : this.timeline.segments;
+        const replacementLane = currentTrack === "audio"
+          ? this.findFreeAudioLane(seg.start, this._copiedSegment.length, seg.id, seg.lane, targetArray)
+          : undefined;
         const newSeg = {
           ...this._copiedSegment,
           id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
           start: seg.start,
-          length: this._copiedSegment.length
+          length: this._copiedSegment.length,
+          ...(currentTrack === "audio" ? { lane: replacementLane } : {})
         };
-        const targetArray = currentTrack === "audio" ? this.timeline.audioSegments : this.timeline.segments;
         const idx = targetArray.findIndex(s => s.id === seg.id);
         if (idx >= 0) targetArray[idx] = newSeg;
+        if (currentTrack === "audio") this.ensureAudioTrackHeight();
         this.commitChanges();
         this.dismissContextMenu();
       };
@@ -4175,15 +4368,20 @@ class TimelineEditor {
       pasteBtn.onclick = () => {
         const startFrame = Math.round(gap.clickedFrame !== undefined ? gap.clickedFrame : gap.frameStart);
         const gapLength = gap.frameEnd - startFrame;
+        const targetArray = currentTrack === "audio" ? this.timeline.audioSegments : this.timeline.segments;
+        const lane = currentTrack === "audio"
+          ? this.findFreeAudioLane(startFrame, this._copiedSegment.length, null, gap.lane, targetArray)
+          : undefined;
 
         const newSeg = {
           ...this._copiedSegment,
           id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
           start: startFrame,
-          length: Math.min(this._copiedSegment.length, gapLength)
+          length: currentTrack === "audio" ? this._copiedSegment.length : Math.min(this._copiedSegment.length, gapLength),
+          ...(currentTrack === "audio" ? { lane } : {})
         };
-        const targetArray = currentTrack === "audio" ? this.timeline.audioSegments : this.timeline.segments;
         targetArray.push(newSeg);
+        if (currentTrack === "audio") this.ensureAudioTrackHeight();
         targetArray.sort((a, b) => a.start - b.start);
         this.commitChanges();
         this.dismissContextMenu();
@@ -4259,7 +4457,7 @@ class TimelineEditor {
       pasteBtn.onclick = () => {
         const gapLength = gap.frameEnd - gap.frameStart;
 
-        let finalLength = Math.min(this._copiedSegment.length, gapLength);
+        let finalLength = currentTrack === "audio" ? this._copiedSegment.length : Math.min(this._copiedSegment.length, gapLength);
         if (currentTrack === "image") {
           finalLength = gapLength;
         }
@@ -4271,7 +4469,11 @@ class TimelineEditor {
           length: finalLength
         };
         const targetArray = currentTrack === "audio" ? this.timeline.audioSegments : this.timeline.segments;
+        if (currentTrack === "audio") {
+          newSeg.lane = this.findFreeAudioLane(gap.frameStart, finalLength, null, gap.lane, targetArray);
+        }
         targetArray.push(newSeg);
+        if (currentTrack === "audio") this.ensureAudioTrackHeight();
         targetArray.sort((a, b) => a.start - b.start);
         this.commitChanges();
         this.dismissGapMenu();
@@ -4788,13 +4990,16 @@ class TimelineEditor {
         if (playDurationSec <= 0) continue;
 
         const source = this.audioContext.createBufferSource();
+        const gainNode = this.audioContext.createGain();
         source.buffer = audioBuffer;
-        source.connect(this.audioContext.destination);
+        gainNode.gain.value = clampVolume(seg.volume);
+        source.connect(gainNode);
+        gainNode.connect(this.audioContext.destination);
 
         const startTime = this.audioContext.currentTime + waitTimeSec;
         source.start(startTime, fileOffsetSec, playDurationSec);
 
-        this.activeAudioNodes.push(source);
+        this.activeAudioNodes.push(source, gainNode);
       } catch (err) {
         console.error("Playback decode error for segment:", err);
       }

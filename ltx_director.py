@@ -175,6 +175,14 @@ def _safe_float(value, fallback: float) -> float:
         return float(fallback)
 
 
+def _clamp_audio_volume(value) -> float:
+    try:
+        volume = float(value)
+    except (TypeError, ValueError):
+        volume = 1.0
+    return max(0.0, min(2.0, volume))
+
+
 def _empty_audio(duration_seconds: float = 1.0, sample_rate: int = 44100, channels: int = 2) -> dict:
     total_samples = max(1, int(math.ceil(max(0.0, duration_seconds) * sample_rate)))
     return {
@@ -499,7 +507,7 @@ def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_ra
             if actual_length <= 0: continue
 
             # Extract the correct segment of the audio
-            clip_waveform = waveform[:, start_sample_src:end_sample_src]
+            clip_waveform = waveform[:, start_sample_src:end_sample_src] * _clamp_audio_volume(seg.get("volume", 1.0))
 
             # Position onto the timeline
             start_sample_dst = int(start_frames / frame_rate * target_sr)
