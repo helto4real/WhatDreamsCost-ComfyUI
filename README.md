@@ -127,6 +127,83 @@ Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyU
 
 **Tutorial videos and documentation coming soon**
 
+### LTX Director Identity Anchors
+
+The identity anchor nodes are optional helper nodes for improving character or face consistency in LTX Director workflows. They are self-contained in this repo and do not require installing 10S Nodes separately.
+
+You can find them in ComfyUI under `LTXVCustom/Identity`:
+- `LTX Director Apply Identity Anchor`
+- `LTX Identity Anchor: Face`
+- `LTX Identity Anchor: Latent Aware`
+- `LTX Identity Anchor: Combine`
+
+`LTX Director Apply Identity Anchor` goes on the model line between LTX Director and your sampler:
+
+```text
+LTX Director.model
+  -> LTX Director Apply Identity Anchor.model
+  -> sampler.model
+```
+
+Then connect one identity config node to `LTX Director Apply Identity Anchor.identity_anchor`.
+
+For the simplest face-consistency setup:
+
+```text
+LTX Identity Anchor: Face.identity_anchor
+  -> LTX Director Apply Identity Anchor.identity_anchor
+```
+
+Recommended starting settings:
+
+```text
+face_bbox_norm = 0.35,0.10,0.65,0.50
+strength = 0.10
+inject_mode = tracked
+anchor_frame = 0
+anchor_upsample = 2
+spatial_prior = 0.50
+```
+
+`face_bbox_norm` is a normalized rectangle around the face in the anchor frame: `x1,y1,x2,y2`, where `0,0` is top-left and `1,1` is bottom-right.
+
+For latent-aware identity anchoring:
+
+```text
+LTX Identity Anchor: Latent Aware.identity_anchor
+  -> LTX Director Apply Identity Anchor.identity_anchor
+```
+
+Recommended starting settings:
+
+```text
+energy_source = auto
+strength = 0.10
+cache_at_step = 6
+similarity_threshold = 0.50
+energy_threshold = 0.30
+```
+
+Optional extra inputs on `LTX Director Apply Identity Anchor`:
+- `guide_data`: connect `LTX Director.guide_data` if Latent Aware should use the first Director guide image as its reference.
+- `vae`: connect your LTX VAE when using a reference image or first guide image for Latent Aware energy.
+- `sigmas`: connect a scheduler `SIGMAS` output if your workflow exposes one. If not, leave it empty.
+
+To use Face and Latent Aware together:
+
+```text
+LTX Identity Anchor: Latent Aware.identity_anchor
+  -> LTX Identity Anchor: Combine.anchor_a
+
+LTX Identity Anchor: Face.identity_anchor
+  -> LTX Identity Anchor: Combine.anchor_b
+
+LTX Identity Anchor: Combine.identity_anchor
+  -> LTX Director Apply Identity Anchor.identity_anchor
+```
+
+Leave `scale_strengths` enabled at first. This reduces both strengths slightly so the video does not become too stiff.
+
 
 ## Multi Image Loader
 <img width="1280" height="720" alt="Multi_Image_Loader_Wide_Gif" src="https://github.com/user-attachments/assets/99b6afd8-5197-4e6c-81da-a7bd156c42c7" />
