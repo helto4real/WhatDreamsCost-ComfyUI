@@ -26,6 +26,7 @@ from .prompt_relay import (
 
 from .patches import detect_model_type, apply_patches
 from .timeline_image_config import resolve_image_path
+from .timeline_audio_config import resolve_audio_path
 
 log = logging.getLogger(__name__)
 
@@ -440,7 +441,14 @@ def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_ra
 
     for seg in audio_segs:
         buffer = None
-        if seg.get("audioFile"):
+        if seg.get("audioFolderAlias") and seg.get("audioFile"):
+            try:
+                with open(resolve_audio_path(seg["audioFolderAlias"], seg["audioFile"]), "rb") as f:
+                    buffer = _io.BytesIO(f.read())
+            except Exception as exc:
+                log.warning("[PromptRelay] Could not load timeline browser audio %s/%s: %s", seg.get("audioFolderAlias"), seg.get("audioFile"), exc)
+
+        if not buffer and seg.get("audioFile"):
             file_path = os.path.join(folder_paths.get_input_directory(), seg["audioFile"])
             if os.path.exists(file_path):
                 with open(file_path, "rb") as f:

@@ -131,6 +131,19 @@ async function fetchTimelineImageJson(url, options) {
   return data;
 }
 
+async function fetchTimelineAudioJson(url, options) {
+  const response = await api.fetchApi(url, options);
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (err) {
+    throw new Error(text || response.statusText || `HTTP ${response.status}`);
+  }
+  if (!response.ok || data.error) throw new Error(data.error || response.statusText);
+  return data;
+}
+
 // --- Modern Dark/Grey UI CSS (ComfyUI Match) ---
 const STYLES = `
   .pr-wrapper {
@@ -766,6 +779,59 @@ const STYLES = `
     border-radius: 3px;
     transition: opacity .12s ease;
   }
+  .pr-audio-browser-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 52vh;
+    overflow: auto;
+    padding: 2px;
+  }
+  .pr-audio-row {
+    display: grid;
+    grid-template-columns: 34px 1fr;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+    background: #181818;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 6px;
+    color: #ddd;
+    cursor: pointer;
+    text-align: left;
+  }
+  .pr-audio-row.selected {
+    border-color: #8ab4f8;
+    background: #202a36;
+  }
+  .pr-audio-play {
+    width: 30px;
+    height: 30px;
+    padding: 4px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #333;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .pr-audio-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .pr-audio-details {
+    min-width: 0;
+  }
+  .pr-audio-size {
+    margin-top: 2px;
+    color: #888;
+    font-size: 10px;
+  }
   .pr-image-browser-meta {
     margin-top: 8px;
     color: #aaa;
@@ -1373,7 +1439,16 @@ class TimelineEditor {
     this.audioFileInput.accept = "audio/*";
     this.audioFileInput.multiple = true;
     this.audioFileInput.style.display = "none";
-    this.audioFileInput.addEventListener("change", (e) => this.handleAudioUpload(e.target.files, Math.round(this.currentFrame || 0)));
+    this.audioFileInput.addEventListener("change", (e) => {
+      const pending = this._pendingAudioUpload || null;
+      this._pendingAudioUpload = null;
+      const targetFrame = pending ? pending.targetFrameStart : Math.round(this.currentFrame || 0);
+      const targetLane = pending ? pending.targetLane : null;
+      this.handleAudioUpload(e.target.files, targetFrame, targetLane);
+    });
+    this.audioFileInput.addEventListener("cancel", () => {
+      this._pendingAudioUpload = null;
+    });
 
     this.videoSourceInput = document.createElement("input");
     this.videoSourceInput.type = "file";
@@ -1400,7 +1475,7 @@ class TimelineEditor {
     const uploadAudioBtn = document.createElement("button");
     uploadAudioBtn.className = "pr-btn";
     uploadAudioBtn.innerHTML = `${ICONS.audio} Add Audio`;
-    uploadAudioBtn.addEventListener("click", () => this.audioFileInput.click());
+    uploadAudioBtn.addEventListener("click", () => this.showTimelineAudioBrowser());
 
     const sourceVideoBtn = document.createElement("button");
     sourceVideoBtn.className = "pr-btn";
@@ -2022,8 +2097,16 @@ class TimelineEditor {
   }
 
   closeTimelineImageBrowser() {
-    document.querySelector(".pr-image-browser-dialog")?.remove();
+    if (document.querySelector(".pr-audio-browser-dialog")) {
+      this.closeTimelineAudioBrowser();
+    }
+    document.querySelector(".pr-image-browser-dialog:not(.pr-audio-browser-dialog)")?.remove();
     document.querySelector(".pr-image-large-preview")?.remove();
+  }
+
+  closeTimelineAudioBrowser() {
+    this.stopTimelineAudioPreview();
+    document.querySelector(".pr-audio-browser-dialog")?.remove();
   }
 
   showImagePreview(imageUrl, caption = "") {
@@ -2083,6 +2166,403 @@ class TimelineEditor {
 
   getTimelineImageUrl(folderAlias, image) {
     return image.image_url || `/wdc_timeline_images/image?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
+  }
+
+  getTimelineAudioUrl(folderAlias, audio) {
+    return audio.audio_url || `/wdc_timeline_audio/audio?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(audio.filename)}&t=${encodeURIComponent(audio.mtime || 0)}`;
+  }
+
+  getTimelineAudioSegmentUrl(seg) {
+    if (!seg?.audioFile) return "";
+    if (seg.audioFolderAlias) {
+      return api.apiURL(`/wdc_timeline_audio/audio?alias=${encodeURIComponent(seg.audioFolderAlias)}&filename=${encodeURIComponent(seg.audioFile)}`);
+    }
+    const filename = seg.audioFile.split("/").pop();
+    const subfolder = seg.audioFile.includes("/") ? seg.audioFile.split("/").slice(0, -1).join("/") : "";
+    return api.apiURL(`/view?filename=${encodeURIComponent(filename)}&type=input&subfolder=${encodeURIComponent(subfolder)}`);
+  }
+
+  stopTimelineAudioPreview() {
+    if (!this._timelineAudioPreview) return;
+    try {
+      this._timelineAudioPreview.pause();
+      this._timelineAudioPreview.removeAttribute("src");
+      this._timelineAudioPreview.load();
+    } catch (err) { }
+    this._timelineAudioPreview = null;
+  }
+
+  openAudioUploadPicker(targetFrameStart = null, targetLane = null) {
+    this._pendingAudioUpload = (targetFrameStart !== null || targetLane !== null)
+      ? { targetFrameStart, targetLane }
+      : null;
+    this.audioFileInput.value = "";
+    this.audioFileInput.click();
+    setTimeout(() => {
+      const clearPendingIfCancelled = () => {
+        setTimeout(() => {
+          if (!this.audioFileInput.files || this.audioFileInput.files.length === 0) {
+            this._pendingAudioUpload = null;
+          }
+        }, 500);
+      };
+      window.addEventListener("focus", clearPendingIfCancelled, { once: true });
+    }, 0);
+  }
+
+  async showTimelineAudioFolderDialog(onDone) {
+    const alias = prompt("Folder alias");
+    if (!alias) return;
+    const path = prompt("Folder path");
+    if (!path) return;
+    await fetchTimelineAudioJson("/wdc_timeline_audio/folders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ alias, path }),
+    });
+    if (onDone) await onDone(alias);
+  }
+
+  async removeTimelineAudioFolderDialog(onDone) {
+    const data = await fetchTimelineAudioJson("/wdc_timeline_audio/folders");
+    const removable = data.folders.filter((folder) => folder.alias !== "input");
+    if (!removable.length) {
+      alert("No custom folders to remove.");
+      return;
+    }
+    const alias = prompt(`Folder alias to remove:\n${removable.map((folder) => folder.alias).join("\n")}`);
+    if (!alias) return;
+    await fetchTimelineAudioJson(`/wdc_timeline_audio/folders?alias=${encodeURIComponent(alias)}`, { method: "DELETE" });
+    if (onDone) await onDone("input");
+  }
+
+  formatAudioFileSize(bytes) {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return "";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  getDecodeAudioContext() {
+    if (!this.audioContext) {
+      this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    return this.audioContext;
+  }
+
+  async decodeAudioArrayBuffer(arrayBuffer) {
+    const audioCtx = this.getDecodeAudioContext();
+    if (audioCtx.state !== "running") {
+      try { await audioCtx.resume(); } catch (e) { }
+    }
+    return await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+  }
+
+  getAudioWaveformPeaks(audioBuffer, numPeaks = 200) {
+    const channelData = audioBuffer.getChannelData(0);
+    const peaks = [];
+    const sampleCount = channelData.length;
+    if (!sampleCount) return Array(numPeaks).fill(0);
+
+    for (let i = 0; i < numPeaks; i++) {
+      const start = Math.floor((i / numPeaks) * sampleCount);
+      const end = Math.max(start + 1, Math.floor(((i + 1) / numPeaks) * sampleCount));
+      let max = 0;
+      for (let j = start; j < end && j < sampleCount; j++) {
+        const val = Math.abs(channelData[j]);
+        if (val > max) max = val;
+      }
+      peaks.push(max);
+    }
+    return peaks;
+  }
+
+  addTimelineAudioSegmentFromBuffer(audioBuffer, options = {}) {
+    const frameRate = this.getFrameRate();
+    const visualDurationFrames = this.getVisualDurationFrames();
+    const insertFrame = options.targetFrameStart === null || options.targetFrameStart === undefined
+      ? Math.round(this.currentFrame || 0)
+      : Math.round(options.targetFrameStart || 0);
+    const clipFrames = Math.max(1, Math.ceil(audioBuffer.duration * frameRate));
+    const newStart = clamp(insertFrame, 0, Math.max(0, visualDurationFrames - 1));
+    const newLength = clipFrames;
+    const newLane = this.findFreeAudioLane(newStart, newLength, null, options.targetLane);
+
+    const seg = {
+      id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      type: "audio",
+      start: newStart,
+      length: newLength,
+      lane: newLane,
+      trimStart: 0,
+      audioDurationFrames: clipFrames,
+      audioFile: options.audioFile,
+      fileName: options.fileName || options.audioFile,
+      volume: 1.0,
+      waveformPeaks: this.getAudioWaveformPeaks(audioBuffer)
+    };
+    if (options.audioFolderAlias) {
+      seg.audioFolderAlias = options.audioFolderAlias;
+    }
+
+    this.timeline.audioSegments.push(seg);
+    this.ensureAudioTrackHeight();
+    this.timeline.audioSegments.sort((a, b) => a.start - b.start);
+    this.selectionType = "audio";
+    this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
+
+    this.updateUIFromSelection();
+    this.commitChanges(true);
+    this.render();
+    return seg;
+  }
+
+  async addTimelineAudioFromBrowser(folderAlias, audio, targetFrameStart = null, targetLane = null) {
+    const audioUrl = this.getTimelineAudioUrl(folderAlias, audio);
+    const resp = await fetch(api.apiURL(audioUrl));
+    if (!resp.ok) throw new Error(`Could not load audio: ${audio.filename}`);
+    const arrayBuffer = await resp.arrayBuffer();
+    const audioBuffer = await this.decodeAudioArrayBuffer(arrayBuffer);
+    this.addTimelineAudioSegmentFromBuffer(audioBuffer, {
+      audioFolderAlias: folderAlias,
+      audioFile: audio.filename,
+      fileName: audio.filename.split("/").pop(),
+      targetFrameStart,
+      targetLane,
+    });
+  }
+
+  async showTimelineAudioBrowser(targetFrameStart = null, targetLane = null) {
+    this.closeTimelineImageBrowser();
+    this.closeTimelineAudioBrowser();
+
+    const overlay = document.createElement("div");
+    overlay.className = "pr-image-browser-dialog pr-audio-browser-dialog";
+    overlay.innerHTML = `
+      <div class="pr-image-browser-panel">
+        <h3>Add Timeline Audio</h3>
+        <div class="pr-image-browser-controls" style="grid-template-columns: 1fr minmax(150px, 1fr) auto auto auto;">
+          <select class="folder" title="Choose configured audio folder"></select>
+          <input class="search" type="search" placeholder="Search audio..." title="Search loaded audio filenames and relative paths">
+          <button class="scope pr-image-icon-btn" type="button" title="Recursive folder view" aria-label="Recursive folder view"></button>
+          <button class="folder-add pr-image-icon-btn" type="button" title="Add configured audio folder" aria-label="Add configured audio folder">+</button>
+          <button class="folder-remove pr-image-icon-btn" type="button" title="Remove configured audio folder" aria-label="Remove configured audio folder">−</button>
+        </div>
+        <span class="pr-image-browser-meta"></span>
+        <div class="pr-audio-browser-list"></div>
+        <div class="pr-image-browser-actions">
+          <button class="upload-audio" type="button">Upload Audio...</button>
+          <button class="cancel" type="button">Cancel</button>
+          <button class="ok" type="button">Add Audio</button>
+        </div>
+      </div>`;
+
+    const panel = overlay.querySelector(".pr-image-browser-panel");
+    const folderSelect = overlay.querySelector(".folder");
+    const searchInput = overlay.querySelector(".search");
+    const scopeButton = overlay.querySelector(".scope");
+    const folderAddButton = overlay.querySelector(".folder-add");
+    const folderRemoveButton = overlay.querySelector(".folder-remove");
+    const list = overlay.querySelector(".pr-audio-browser-list");
+    const meta = overlay.querySelector(".pr-image-browser-meta");
+    const previewAudio = new Audio();
+    this._timelineAudioPreview = previewAudio;
+
+    let availableAudios = [];
+    let selectedAudio = null;
+    let recursive = true;
+    let playingFilename = null;
+
+    const syncScopeButton = () => {
+      scopeButton.title = recursive ? "Show audio recursively from subfolders" : "Show only audio directly in this folder";
+      scopeButton.innerHTML = recursive
+        ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h9a2 2 0 0 1 2 2v2"/><path d="M6 12v6a2 2 0 0 0 2 2h5"/><path d="M10 15h4l1.5 1.5H21v3.5H10z"/></svg>`
+        : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+    };
+
+    const syncPreviewButtons = () => {
+      for (const button of list.querySelectorAll(".pr-audio-play")) {
+        const isPlaying = button.dataset.filename === playingFilename && !previewAudio.paused;
+        button.innerHTML = isPlaying ? ICONS.pause : ICONS.play;
+        button.title = isPlaying ? "Pause preview" : "Play preview";
+        button.setAttribute("aria-label", button.title);
+      }
+    };
+
+    const selectAudio = (audio, row) => {
+      selectedAudio = audio;
+      for (const other of list.querySelectorAll(".pr-audio-row")) other.classList.remove("selected");
+      row.classList.add("selected");
+      meta.textContent = audio.filename;
+    };
+
+    const togglePreview = async (audio) => {
+      const audioUrl = api.apiURL(this.getTimelineAudioUrl(folderSelect.value, audio));
+      if (playingFilename === audio.filename && !previewAudio.paused) {
+        previewAudio.pause();
+        syncPreviewButtons();
+        return;
+      }
+      if (playingFilename !== audio.filename) {
+        previewAudio.pause();
+        previewAudio.src = audioUrl;
+        playingFilename = audio.filename;
+      }
+      try {
+        await previewAudio.play();
+      } catch (err) {
+        playingFilename = null;
+        meta.textContent = `Could not preview ${audio.filename}.`;
+      }
+      syncPreviewButtons();
+    };
+
+    const renderAudioList = () => {
+      list.innerHTML = "";
+      const query = searchInput.value.trim().toLowerCase();
+      const visibleAudios = query
+        ? availableAudios.filter((audio) => String(audio.filename || "").toLowerCase().includes(query))
+        : availableAudios;
+
+      if (selectedAudio && !visibleAudios.some((audio) => audio.filename === selectedAudio.filename)) {
+        selectedAudio = null;
+      }
+
+      for (const audio of visibleAudios) {
+        const row = document.createElement("div");
+        row.className = `pr-audio-row${selectedAudio?.filename === audio.filename ? " selected" : ""}`;
+        row.title = `${audio.filename}\nClick to select.`;
+        row.tabIndex = 0;
+
+        const playButton = document.createElement("button");
+        playButton.type = "button";
+        playButton.className = "pr-audio-play";
+        playButton.dataset.filename = audio.filename;
+        playButton.innerHTML = ICONS.play;
+        playButton.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          selectAudio(audio, row);
+          await togglePreview(audio);
+        });
+
+        const details = document.createElement("div");
+        details.className = "pr-audio-details";
+        details.innerHTML = `
+          <div class="pr-audio-name">${escapeHtml(audio.filename)}</div>
+          <div class="pr-audio-size">${escapeHtml(this.formatAudioFileSize(audio.size))}</div>`;
+
+        row.appendChild(playButton);
+        row.appendChild(details);
+        row.addEventListener("click", () => selectAudio(audio, row));
+        row.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectAudio(audio, row);
+          }
+        });
+        list.appendChild(row);
+      }
+
+      if (!availableAudios.length) {
+        meta.textContent = "No audio clips found.";
+      } else if (!visibleAudios.length) {
+        meta.textContent = `No audio clips match "${searchInput.value.trim()}".`;
+      } else if (query) {
+        meta.textContent = `${visibleAudios.length} of ${availableAudios.length} audio clips match. Select one to add.`;
+      } else if (!selectedAudio) {
+        meta.textContent = `${availableAudios.length} audio clips. Select one to add.`;
+      }
+      syncPreviewButtons();
+    };
+
+    const loadFolders = async (preferredAlias = null) => {
+      const data = await fetchTimelineAudioJson("/wdc_timeline_audio/folders");
+      folderSelect.innerHTML = data.folders.map((folder) => `<option value="${escapeHtml(folder.alias)}">${escapeHtml(folder.alias)}${folder.exists ? "" : " (missing)"}</option>`).join("");
+      const lastAlias = preferredAlias || this.node.properties?.wdc_timeline_last_audio_folder_alias;
+      if (lastAlias && data.folders.some((folder) => folder.alias === lastAlias)) {
+        folderSelect.value = lastAlias;
+      }
+    };
+
+    const loadAudios = async () => {
+      this.node.properties = this.node.properties || {};
+      this.node.properties.wdc_timeline_last_audio_folder_alias = folderSelect.value;
+      previewAudio.pause();
+      playingFilename = null;
+      const data = await fetchTimelineAudioJson(`/wdc_timeline_audio/audios?alias=${encodeURIComponent(folderSelect.value)}&recursive=${recursive ? "1" : "0"}`);
+      availableAudios = data.audios || [];
+      selectedAudio = null;
+      renderAudioList();
+    };
+
+    previewAudio.addEventListener("pause", syncPreviewButtons);
+    previewAudio.addEventListener("ended", () => {
+      playingFilename = null;
+      syncPreviewButtons();
+    });
+    previewAudio.addEventListener("error", () => {
+      playingFilename = null;
+      syncPreviewButtons();
+    });
+
+    folderSelect.addEventListener("change", loadAudios);
+    scopeButton.addEventListener("click", async () => {
+      recursive = !recursive;
+      syncScopeButton();
+      await loadAudios();
+    });
+    folderAddButton.addEventListener("click", async () => {
+      try {
+        await this.showTimelineAudioFolderDialog(async (alias) => {
+          await loadFolders(alias);
+          await loadAudios();
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    folderRemoveButton.addEventListener("click", async () => {
+      try {
+        await this.removeTimelineAudioFolderDialog(async (alias) => {
+          await loadFolders(alias);
+          await loadAudios();
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    searchInput.addEventListener("input", renderAudioList);
+    overlay.querySelector(".upload-audio").addEventListener("click", () => {
+      this.closeTimelineAudioBrowser();
+      this.openAudioUploadPicker(targetFrameStart, targetLane);
+    });
+    overlay.querySelector(".cancel").addEventListener("click", () => this.closeTimelineAudioBrowser());
+    overlay.querySelector(".ok").addEventListener("click", async () => {
+      if (!selectedAudio) {
+        alert("Select an audio clip first.");
+        return;
+      }
+      try {
+        await this.addTimelineAudioFromBrowser(folderSelect.value, selectedAudio, targetFrameStart, targetLane);
+        this.closeTimelineAudioBrowser();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) this.closeTimelineAudioBrowser();
+    });
+
+    document.body.appendChild(overlay);
+    syncScopeButton();
+    try {
+      await loadFolders();
+      await loadAudios();
+    } catch (err) {
+      meta.textContent = err.message;
+    }
+    panel.focus?.();
   }
 
   getSelectedImageSegment() {
@@ -2651,8 +3131,6 @@ class TimelineEditor {
 
   // --- Async Audio Upload Logic ---
   async handleAudioUpload(files, targetFrameStart = null, targetLane = null) {
-    const frameRate = this.getFrameRate();
-    const visualDurationFrames = this.getVisualDurationFrames();
     const insertFrame = targetFrameStart === null
       ? Math.round(this.currentFrame || 0)
       : Math.round(targetFrameStart || 0);
@@ -2673,54 +3151,13 @@ class TimelineEditor {
           const audioFile = subfolder ? subfolder + "/" + filename : filename;
 
           const arrayBuffer = await file.arrayBuffer();
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-          const clipDurationSecs = audioBuffer.duration;
-          const clipFrames = Math.max(1, Math.ceil(clipDurationSecs * frameRate));
-
-          const channelData = audioBuffer.getChannelData(0);
-          const peaks = [];
-          const numPeaks = 200;
-          const step = Math.floor(channelData.length / numPeaks);
-          for (let i = 0; i < numPeaks; i++) {
-            let max = 0;
-            for (let j = 0; j < step; j++) {
-              const val = Math.abs(channelData[i * step + j]);
-              if (val > max) max = val;
-            }
-            peaks.push(max);
-          }
-
-          let newLength = clipFrames;
-          let newStart = clamp(insertFrame, 0, Math.max(0, visualDurationFrames - 1));
-
-          // Use the full clip length — timeline has already grown to fit.
-          let constrainedLength = newLength;
-          let newLane = this.findFreeAudioLane(newStart, constrainedLength, null, targetLane);
-
-          const seg = {
-            id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-            type: "audio",
-            start: newStart,
-            length: constrainedLength,
-            lane: newLane,
-            trimStart: 0,
-            audioDurationFrames: clipFrames,
-            audioFile: audioFile,
+          const audioBuffer = await this.decodeAudioArrayBuffer(arrayBuffer);
+          this.addTimelineAudioSegmentFromBuffer(audioBuffer, {
+            audioFile,
             fileName: file.name,
-            volume: 1.0,
-            waveformPeaks: peaks
-          };
-
-          this.timeline.audioSegments.push(seg);
-          this.ensureAudioTrackHeight();
-          this.timeline.audioSegments.sort((a, b) => a.start - b.start);
-          this.selectionType = "audio";
-          this.selectedIndex = this.timeline.audioSegments.findIndex(s => s.id === seg.id);
-
-          this.updateUIFromSelection();
-          this.commitChanges(true);
-          this.render();
+            targetFrameStart: insertFrame,
+            targetLane,
+          });
           resolve();
         } catch (err) {
           console.error("[PromptRelay] Audio processing failed", err);
@@ -4160,13 +4597,7 @@ class TimelineEditor {
   }
 
   promptAddAudioInGap(frameStart, frameEnd, lane = 0) {
-    const fi = document.createElement("input");
-    fi.type = "file";
-    fi.accept = "audio/*";
-    fi.addEventListener("change", (ev) => {
-      if (ev.target.files?.[0]) this.handleAudioUpload([ev.target.files[0]], frameStart, lane);
-    });
-    fi.click();
+    this.showTimelineAudioBrowser(frameStart, lane);
   }
 
   // --- Context Menu ---
@@ -4960,7 +5391,7 @@ class TimelineEditor {
         // Build audio buffer: fetch from server URL if audioFile is set, otherwise fall back to audioB64
         let audioBuffer;
         if (seg.audioFile) {
-          const audioUrl = api.apiURL(`/view?filename=${encodeURIComponent(seg.audioFile.split("/").pop())}&type=input&subfolder=${encodeURIComponent(seg.audioFile.includes("/") ? seg.audioFile.split("/").slice(0, -1).join("/") : "")}`);
+          const audioUrl = this.getTimelineAudioSegmentUrl(seg);
           const resp = await fetch(audioUrl);
           const arrayBuffer = await resp.arrayBuffer();
           audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
