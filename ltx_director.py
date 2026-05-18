@@ -27,6 +27,7 @@ from .prompt_relay import (
 from .patches import detect_model_type, apply_patches
 from .timeline_image_config import resolve_image_path
 from .timeline_audio_config import resolve_audio_path
+from .ltx_director_privacy import resolve_ltx_director_inputs
 
 log = logging.getLogger(__name__)
 
@@ -747,6 +748,14 @@ class LTXDirector(io.ComfyNode):
                     "use_global_prompt", default=False, optional=True,
                     tooltip="Show the global prompt widget on the node.",
                 ),
+                io.Boolean.Input(
+                    "privacy_mode", default=False, optional=True,
+                    tooltip="Encrypt workflow-saved LTX Director state using a local privacy key.",
+                ),
+                io.String.Input(
+                    "privacy_payload", default="", optional=True,
+                    tooltip="Encrypted LTX Director state (auto-managed; do not edit by hand).",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -770,9 +779,26 @@ class LTXDirector(io.ComfyNode):
                 use_input_image_size=False, aspect_ratio="16:9", orientation="landscape",
                 quality_tier="6 - LTX 2.3 native", resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
-                use_custom_audio=False, use_global_prompt=False) -> io.NodeOutput:
+                use_custom_audio=False, use_global_prompt=False,
+                privacy_mode=False, privacy_payload="") -> io.NodeOutput:
 
         frame_rate = _safe_float(frame_rate, 24.0)
+
+        resolved_inputs = resolve_ltx_director_inputs(
+            global_prompt=global_prompt,
+            timeline_data=timeline_data,
+            local_prompts=local_prompts,
+            segment_lengths=segment_lengths,
+            guide_strength=guide_strength,
+            duration_frames=duration_frames,
+            privacy_mode=privacy_mode,
+            privacy_payload=privacy_payload,
+        )
+        global_prompt = resolved_inputs["global_prompt"]
+        timeline_data = resolved_inputs["timeline_data"]
+        local_prompts = resolved_inputs["local_prompts"]
+        segment_lengths = resolved_inputs["segment_lengths"]
+        guide_strength = resolved_inputs["guide_strength"]
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}

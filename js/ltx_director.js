@@ -12,8 +12,10 @@ const MIN_SEGMENT_LENGTH = 6;
 const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller images
 const SOURCE_VIDEO_DEFAULT_GUIDE_FRAMES = 9;
 const SOURCE_VIDEO_MAX_GUIDE_FRAMES = 65;
+const PRIVACY_SCHEMA = "whatdreamscost.ltx-director";
+const EMPTY_TIMELINE_JSON = "{\"segments\":[],\"audioSegments\":[]}";
 
-const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "use_global_prompt", "hide_timeline_images_prompts"];
+const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "use_global_prompt", "hide_timeline_images_prompts", "privacy_mode", "privacy_payload"];
 
 function hideWidget(w) {
   if (!w) return;
@@ -35,6 +37,93 @@ function setWidgetBoolValue(widget, value) {
   if (widget.callback) {
     try { widget.callback(widget.value, app.canvas, widget.node, null, null); } catch (e) { }
   }
+}
+
+function parseJsonObject(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function isEncryptedPrivacyPayload(value) {
+  const parsed = parseJsonObject(value);
+  return parsed.encrypted === true && parsed.schema === PRIVACY_SCHEMA && parsed.algorithm === "AES-256-GCM";
+}
+
+function timelineValueHasSavedData(value) {
+  const parsed = parseJsonObject(value);
+  return Array.isArray(parsed.segments) || Array.isArray(parsed.audioSegments);
+}
+
+function repairLegacyPrivacyWidgetShift(node) {
+  const privacyModeWidget = node.widgets?.find(w => w.name === "privacy_mode");
+  const privacyPayloadWidget = node.widgets?.find(w => w.name === "privacy_payload");
+  const hideTimelineWidget = node.widgets?.find(w => w.name === "hide_timeline_images_prompts");
+  const timelineDataWidget = node.widgets?.find(w => w.name === "timeline_data");
+
+  if (!privacyModeWidget || !privacyPayloadWidget) return;
+  if (!widgetBoolValue(privacyModeWidget.value)) return;
+  if (isEncryptedPrivacyPayload(privacyPayloadWidget.value)) return;
+  if (!timelineValueHasSavedData(timelineDataWidget?.value)) return;
+
+  if (hideTimelineWidget) hideTimelineWidget.value = privacyModeWidget.value;
+  privacyModeWidget.value = "false";
+  privacyPayloadWidget.value = "";
+}
+
+async function fetchPrivacyJson(endpoint, payload = null) {
+  const options = payload
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
+    : undefined;
+  const response = await api.fetchApi(`/wdc_ltx_director/privacy/${endpoint}`, options);
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (err) {
+    throw new Error(text || response.statusText || `HTTP ${response.status}`);
+  }
+  if (!response.ok || data.ok === false || data.error) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+function encryptPrivacyStateSync(state) {
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", api.apiURL("/wdc_ltx_director/privacy/encrypt"), false);
+  xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.send(JSON.stringify({ state }));
+  let data = {};
+  try {
+    data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+  } catch {
+    throw new Error(xhr.responseText || xhr.statusText || `HTTP ${xhr.status}`);
+  }
+  if (xhr.status < 200 || xhr.status >= 300 || data.ok === false || data.error) {
+    throw new Error(data.error || xhr.statusText || `HTTP ${xhr.status}`);
+  }
+  return data.envelope;
+}
+
+function serializedWidgetIndex(node, name) {
+  const widgets = node.widgets || [];
+  let index = 0;
+  for (const widget of widgets) {
+    if (widget.type === "button" || widget.serialize === false) continue;
+    if (widget.name === name) return index;
+    index += 1;
+  }
+  return -1;
+}
+
+function setSerializedWidgetValue(info, node, name, value) {
+  if (!Array.isArray(info.widgets_values)) return;
+  const index = serializedWidgetIndex(node, name);
+  if (index >= 0 && index < info.widgets_values.length) info.widgets_values[index] = value;
 }
 
 function applyGlobalPromptWidgetVisibility(globalPromptWidget, isVisible) {
@@ -247,6 +336,19 @@ const STYLES = `
   }
   .pr-privacy-hidden-text::placeholder {
     color: transparent !important;
+  }
+  .pr-privacy-status {
+    display: none;
+    color: #f0c674;
+    background: #231f13;
+    border: 1px solid #5d4c22;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 11px;
+    line-height: 1.35;
+  }
+  .pr-privacy-status.is-visible {
+    display: block;
   }
   .pr-audio-info {
     width: 100%;
@@ -1025,6 +1127,14 @@ class TimelineEditor {
     this.displayModeWidget = this.node.widgets.find(w => w.name === "display_mode");
     this.useGlobalPromptWidget = this.node.widgets.find(w => w.name === "use_global_prompt");
     this.hideTimelineImagesPromptsWidget = this.node.widgets.find(w => w.name === "hide_timeline_images_prompts");
+    this.privacyModeWidget = this.node.widgets.find(w => w.name === "privacy_mode");
+    this.privacyPayloadWidget = this.node.widgets.find(w => w.name === "privacy_payload");
+    repairLegacyPrivacyWidgetShift(this.node);
+    this.privacyBusy = false;
+    this.privacyLocked = false;
+    this.privacyStatus = "";
+    this._privacyEncryptSeq = 0;
+    this._privateGlobalPrompt = this.getGlobalPromptWidget()?.value || "";
 
     this.timeline = parseInitial(this.timelineDataWidget?.value);
     this.ensureAudioTrackHeight();
@@ -1032,6 +1142,13 @@ class TimelineEditor {
 
     this.createDOM();
     this.applyGlobalPromptVisibility();
+    if (this.isPrivacyModeEnabled() && isEncryptedPrivacyPayload(this.privacyPayloadWidget?.value)) {
+      this.timeline = { segments: [], audioSegments: [] };
+      this.privacyLocked = true;
+      this.privacyStatus = "Decrypting private timeline data...";
+      this.updatePrivacyStatus();
+      void this.decryptPrivacyPayload();
+    }
     if (this.timeline.segments.length > 0) {
       this.selectedIndex = 0;
     }
@@ -1096,6 +1213,18 @@ class TimelineEditor {
       this.updateWidgetVisibility(); // Initial trigger
     }
 
+    const globalPromptWidget = this.getGlobalPromptWidget();
+    const origGlobalPromptCallback = globalPromptWidget?.callback;
+    if (globalPromptWidget) {
+      globalPromptWidget.callback = (...args) => {
+        if (origGlobalPromptCallback) origGlobalPromptCallback.apply(globalPromptWidget, args);
+        this._privateGlobalPrompt = globalPromptWidget.value || "";
+        if (this.isPrivacyModeEnabled() && !this.privacyLocked) {
+          void this.encryptPrivacyState({ renderAfter: false });
+        }
+      };
+    }
+
     // Polling is much more reliable in Comfy than ResizeObserver due to scale transforms
     this._renderLoop = requestAnimationFrame(this.checkResize.bind(this));
   }
@@ -1114,6 +1243,117 @@ class TimelineEditor {
 
   getFrameRate() {
     return parseInt((this.frameRateWidget && this.frameRateWidget.value > 0) ? this.frameRateWidget.value : 24, 10);
+  }
+
+  isPrivacyModeEnabled() {
+    return widgetBoolValue(this.privacyModeWidget?.value);
+  }
+
+  setPrivacyStatus(message = "", locked = this.privacyLocked) {
+    this.privacyStatus = message;
+    this.privacyLocked = locked;
+    this.updatePrivacyStatus();
+  }
+
+  updatePrivacyStatus() {
+    if (!this.privacyStatusEl) return;
+    this.privacyStatusEl.textContent = this.privacyStatus || "";
+    this.privacyStatusEl.classList.toggle("is-visible", Boolean(this.privacyStatus));
+  }
+
+  getTimelinePrivacyState() {
+    return {
+      global_prompt: this.getGlobalPromptWidget()?.value || this._privateGlobalPrompt || "",
+      timeline: this.buildTimelineSaveObject(),
+    };
+  }
+
+  sanitizeWidgetsForPrivacy() {
+    if (this.timelineDataWidget) this.timelineDataWidget.value = EMPTY_TIMELINE_JSON;
+    if (this.localPromptsWidget) this.localPromptsWidget.value = "";
+    if (this.segmentLengthsWidget) this.segmentLengthsWidget.value = "";
+    if (this.guideStrengthWidget) this.guideStrengthWidget.value = "";
+  }
+
+  async encryptPrivacyState({ renderAfter = false } = {}) {
+    if (!this.isPrivacyModeEnabled() || this.privacyLocked) return false;
+    const sequence = ++this._privacyEncryptSeq;
+    this.privacyBusy = true;
+    this.setPrivacyStatus("Encrypting private timeline data...", false);
+    try {
+      const result = await fetchPrivacyJson("encrypt", { state: this.getTimelinePrivacyState() });
+      if (sequence !== this._privacyEncryptSeq) return false;
+      if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = JSON.stringify(result.envelope);
+      this.sanitizeWidgetsForPrivacy();
+      this.setPrivacyStatus("", false);
+      if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      if (renderAfter) this.render();
+      return true;
+    } catch (err) {
+      if (sequence === this._privacyEncryptSeq) {
+        this.setPrivacyStatus(`Privacy encryption failed: ${err.message}`, false);
+      }
+      return false;
+    } finally {
+      if (sequence === this._privacyEncryptSeq) this.privacyBusy = false;
+    }
+  }
+
+  async decryptPrivacyPayload() {
+    if (!isEncryptedPrivacyPayload(this.privacyPayloadWidget?.value)) return false;
+    this.privacyBusy = true;
+    this.setPrivacyStatus("Decrypting private timeline data...", true);
+    try {
+      const result = await fetchPrivacyJson("decrypt", { payload: parseJsonObject(this.privacyPayloadWidget.value) });
+      const state = result.state || {};
+      this._privateGlobalPrompt = String(state.global_prompt || "");
+      const globalPromptWidget = this.getGlobalPromptWidget();
+      if (globalPromptWidget) globalPromptWidget.value = this._privateGlobalPrompt;
+      this.timeline = parseInitial(JSON.stringify(state.timeline || {}));
+      this.ensureAudioTrackHeight();
+      this.loadImages();
+      this.selectionType = "image";
+      this.selectedIndex = clamp(this.selectedIndex, -1, Math.max(-1, this.timeline.segments.length - 1));
+      this.updateUIFromSelection();
+      this.applyGlobalPromptVisibility();
+      this.commitChanges(true);
+      this.setPrivacyStatus("", false);
+      this.render();
+      return true;
+    } catch (err) {
+      this.timeline = { segments: [], audioSegments: [] };
+      this.setPrivacyStatus(`Private timeline locked: ${err.message}`, true);
+      this.updateUIFromSelection();
+      this.render();
+      return false;
+    } finally {
+      this.privacyBusy = false;
+    }
+  }
+
+  async setPrivacyMode(enabled) {
+    if (this.privacyBusy) return;
+    if (enabled === this.isPrivacyModeEnabled()) return;
+
+    if (enabled) {
+      setWidgetBoolValue(this.privacyModeWidget, true);
+      const ok = await this.encryptPrivacyState({ renderAfter: true });
+      if (!ok) {
+        setWidgetBoolValue(this.privacyModeWidget, false);
+        if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = "";
+      }
+      return;
+    }
+
+    if (!confirm("Disable Privacy mode? This will save the LTX Director timeline and global prompt in clear text inside the workflow.")) {
+      return;
+    }
+    this._privacyEncryptSeq += 1;
+    setWidgetBoolValue(this.privacyModeWidget, false);
+    if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = "";
+    this.setPrivacyStatus("", false);
+    this.commitChanges(true);
+    if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
   }
 
   getAudioLaneCount(audioSegments = this.timeline.audioSegments) {
@@ -1640,6 +1880,7 @@ class TimelineEditor {
     this.promptInput.className = "pr-prompt-area";
     this.promptInput.placeholder = "Enter prompt for selected segment...";
     this.promptInput.addEventListener("input", () => {
+      if (this.privacyLocked) return;
       if (this.shouldHideTimelineImagesPrompts()) {
         this.updateUIFromSelection();
         return;
@@ -2010,6 +2251,10 @@ class TimelineEditor {
 
 
     this.wrapper.appendChild(toolbar);
+    this.privacyStatusEl = document.createElement("div");
+    this.privacyStatusEl.className = "pr-privacy-status";
+    this.updatePrivacyStatus();
+    this.wrapper.appendChild(this.privacyStatusEl);
     this.wrapper.appendChild(this.viewport);
 
     const controlsGroup = document.createElement("div");
@@ -3279,7 +3524,7 @@ class TimelineEditor {
 
       if (seg) {
         this.promptInput.value = seg.prompt || "";
-        this.promptInput.disabled = false;
+        this.promptInput.disabled = this.privacyLocked;
 
         const isImage = seg.type !== "text";
         const strength = isImage ? (seg.guideStrength ?? 1.0) : 1.0;
@@ -4450,6 +4695,21 @@ class TimelineEditor {
   }
 
   // --- Backend Data Sync ---
+  buildTimelineSaveObject() {
+    const sortedSegments = [...this.timeline.segments].sort((a, b) => a.start - b.start);
+    return {
+      segments: sortedSegments.map(s => {
+        const { imgObj, ...rest } = s;
+        return rest;
+      }),
+      audioSegments: (this.timeline.audioSegments || []).map(s => ({
+        ...s,
+        lane: normalizeAudioLane(s.lane),
+        volume: clampVolume(s.volume)
+      }))
+    };
+  }
+
   commitChanges(skipRender = false) {
     let sortedSegments = [...this.timeline.segments].sort((a, b) => a.start - b.start);
     let contiguousLengths = [];
@@ -4502,33 +4762,27 @@ class TimelineEditor {
       contiguousLengths[contiguousLengths.length - 1] += durationFrames - clampedCursor;
     }
 
-    const toSave = {
-      segments: sortedSegments.map(s => {
-        const { imgObj, ...rest } = s;
-        return rest;
-      }),
-      audioSegments: (this.timeline.audioSegments || []).map(s => ({
-        ...s,
-        lane: normalizeAudioLane(s.lane),
-        volume: clampVolume(s.volume)
-      }))
-    };
+    const toSave = this.buildTimelineSaveObject();
 
     const jsonStr = JSON.stringify(toSave);
-    if (this.timelineDataWidget) this.timelineDataWidget.value = jsonStr;
+    if (this.timelineDataWidget) this.timelineDataWidget.value = this.isPrivacyModeEnabled() ? EMPTY_TIMELINE_JSON : jsonStr;
 
     if (this.localPromptsWidget) {
-      this.localPromptsWidget.value = contiguousPrompts.join(" | ");
+      this.localPromptsWidget.value = this.isPrivacyModeEnabled() ? "" : contiguousPrompts.join(" | ");
     }
     if (this.segmentLengthsWidget) {
-      this.segmentLengthsWidget.value = contiguousLengths.join(",");
+      this.segmentLengthsWidget.value = this.isPrivacyModeEnabled() ? "" : contiguousLengths.join(",");
     }
 
     if (this.guideStrengthWidget) {
       const imgStrengths = sortedSegments
         .filter(s => s.type !== "text")
         .map(s => (s.guideStrength !== undefined ? s.guideStrength : 1.0).toFixed(2));
-      this.guideStrengthWidget.value = imgStrengths.join(",");
+      this.guideStrengthWidget.value = this.isPrivacyModeEnabled() ? "" : imgStrengths.join(",");
+    }
+
+    if (this.isPrivacyModeEnabled() && !this.privacyLocked) {
+      void this.encryptPrivacyState({ renderAfter: false });
     }
 
     // Keep zoom slider max in sync with the current timeline duration.
@@ -5091,6 +5345,21 @@ class TimelineEditor {
       menu.appendChild(this._makeSettingRow("Hide Images/Prompts", cb));
     }
 
+    if (this.privacyModeWidget) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = this.isPrivacyModeEnabled();
+      cb.disabled = this.privacyBusy || this.privacyLocked;
+      cb.style.cursor = cb.disabled ? "not-allowed" : "pointer";
+      cb.title = "Encrypt workflow-saved timeline, media metadata, segment prompts, and global prompt.";
+      cb.addEventListener("change", async () => {
+        await this.setPrivacyMode(cb.checked);
+        cb.checked = this.isPrivacyModeEnabled();
+        cb.disabled = this.privacyBusy || this.privacyLocked;
+      });
+      menu.appendChild(this._makeSettingRow("Privacy Mode", cb));
+    }
+
     const divider1 = document.createElement("hr");
     divider1.className = "pr-settings-divider";
     menu.appendChild(divider1);
@@ -5501,6 +5770,8 @@ const APPENDED_WIDGET_DEFAULTS = [
   ["segment_lengths", ""],
   ["use_global_prompt", "false"],
   ["hide_timeline_images_prompts", "false"],
+  ["privacy_mode", "false"],
+  ["privacy_payload", ""],
 ];
 
 app.registerExtension({
@@ -5561,6 +5832,65 @@ app.registerExtension({
         return onRemoved?.apply(this, arguments);
       };
 
+      const onSerialize = nodeType.prototype.onSerialize;
+      nodeType.prototype.onSerialize = function (info) {
+        const editor = this._timelineEditor;
+        const privacyModeWidget = this.widgets?.find(w => w.name === "privacy_mode");
+        const privacyPayloadWidget = this.widgets?.find(w => w.name === "privacy_payload");
+        const privacyEnabled = widgetBoolValue(privacyModeWidget?.value);
+        const stashed = [];
+
+        if (privacyEnabled) {
+          if (editor && !editor.privacyLocked) {
+            try {
+              const envelope = encryptPrivacyStateSync(editor.getTimelinePrivacyState());
+              if (privacyPayloadWidget) privacyPayloadWidget.value = JSON.stringify(envelope);
+              editor.setPrivacyStatus("", false);
+            } catch (err) {
+              editor.setPrivacyStatus(`Privacy encryption failed while saving: ${err.message}`, false);
+            }
+          }
+
+          const sanitizedValues = {
+            global_prompt: "",
+            timeline_data: EMPTY_TIMELINE_JSON,
+            local_prompts: "",
+            segment_lengths: "",
+            guide_strength: "",
+            privacy_mode: "true",
+            privacy_payload: privacyPayloadWidget?.value || "",
+          };
+          for (const [name, value] of Object.entries(sanitizedValues)) {
+            const widget = this.widgets?.find(w => w.name === name);
+            if (!widget) continue;
+            stashed.push([widget, widget.value]);
+            widget.value = value;
+          }
+        }
+
+        const out = onSerialize?.apply(this, arguments);
+
+        if (privacyEnabled) {
+          setSerializedWidgetValue(info, this, "global_prompt", "");
+          setSerializedWidgetValue(info, this, "timeline_data", EMPTY_TIMELINE_JSON);
+          setSerializedWidgetValue(info, this, "local_prompts", "");
+          setSerializedWidgetValue(info, this, "segment_lengths", "");
+          setSerializedWidgetValue(info, this, "guide_strength", "");
+          setSerializedWidgetValue(info, this, "privacy_mode", "true");
+          setSerializedWidgetValue(info, this, "privacy_payload", privacyPayloadWidget?.value || "");
+        }
+
+        for (const [widget, value] of stashed) {
+          widget.value = value;
+        }
+
+        if (privacyEnabled && editor && !editor.privacyBusy && !editor.privacyLocked) {
+          void editor.encryptPrivacyState({ renderAfter: false });
+        }
+
+        return out;
+      };
+
       const onConfigure = nodeType.prototype.onConfigure;
       nodeType.prototype.onConfigure = function (info) {
         const out = onConfigure?.apply(this, arguments);
@@ -5569,22 +5899,42 @@ app.registerExtension({
           if (w && (w.value == null || w.value === "")) w.value = def;
         }
 
+        const privacyPayloadIndex = serializedWidgetIndex(this, "privacy_payload");
+        if (Array.isArray(info?.widgets_values) && privacyPayloadIndex >= 0 && info.widgets_values.length <= privacyPayloadIndex) {
+          const privacyModeWidget = this.widgets?.find(w => w.name === "privacy_mode");
+          const hideTimelineWidget = this.widgets?.find(w => w.name === "hide_timeline_images_prompts");
+          const privacyPayloadWidget = this.widgets?.find(w => w.name === "privacy_payload");
+          if (hideTimelineWidget && privacyModeWidget) hideTimelineWidget.value = privacyModeWidget.value || "false";
+          if (privacyModeWidget) privacyModeWidget.value = "false";
+          if (privacyPayloadWidget) privacyPayloadWidget.value = "";
+        }
+        repairLegacyPrivacyWidgetShift(this);
+
         setTimeout(() => {
           const globalPromptWidget = this.widgets?.find(w => w.name === "global_prompt");
           const useGlobalPromptWidget = this.widgets?.find(w => w.name === "use_global_prompt");
           applyGlobalPromptWidgetVisibility(globalPromptWidget, widgetBoolValue(useGlobalPromptWidget?.value));
           if (this._timelineEditor) {
-            this._timelineEditor.timeline = parseInitial(this._timelineEditor.timelineDataWidget?.value);
-            this._timelineEditor.loadImages();
+            repairLegacyPrivacyWidgetShift(this);
             this._timelineEditor.useGlobalPromptWidget = useGlobalPromptWidget;
-            this._timelineEditor.applyGlobalPromptVisibility();
-            this._timelineEditor.selectionType = "image";
-            this._timelineEditor.selectedIndex = clamp(
-              this._timelineEditor.selectedIndex, -1,
-              Math.max(-1, this._timelineEditor.timeline.segments.length - 1)
-            );
-            this._timelineEditor.updateUIFromSelection();
-            this._timelineEditor.render();
+            this._timelineEditor.privacyModeWidget = this.widgets?.find(w => w.name === "privacy_mode");
+            this._timelineEditor.privacyPayloadWidget = this.widgets?.find(w => w.name === "privacy_payload");
+            if (this._timelineEditor.isPrivacyModeEnabled() && isEncryptedPrivacyPayload(this._timelineEditor.privacyPayloadWidget?.value)) {
+              this._timelineEditor.privacyLocked = true;
+              this._timelineEditor.setPrivacyStatus("Decrypting private timeline data...", true);
+              void this._timelineEditor.decryptPrivacyPayload();
+            } else {
+              this._timelineEditor.timeline = parseInitial(this._timelineEditor.timelineDataWidget?.value);
+              this._timelineEditor.loadImages();
+              this._timelineEditor.applyGlobalPromptVisibility();
+              this._timelineEditor.selectionType = "image";
+              this._timelineEditor.selectedIndex = clamp(
+                this._timelineEditor.selectedIndex, -1,
+                Math.max(-1, this._timelineEditor.timeline.segments.length - 1)
+              );
+              this._timelineEditor.updateUIFromSelection();
+              this._timelineEditor.render();
+            }
           }
         }, 0);
         return out;
