@@ -6,6 +6,12 @@ from .load_audio_ui import LoadAudioUI
 from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
 from .ltx_director_guide import LTXDirectorGuide
+from .ltx_identity_anchor import (
+    LTXDirectorApplyIdentityAnchor,
+    LTXIdentityAnchorCombine,
+    LTXIdentityAnchorFace,
+    LTXIdentityAnchorLatentAware,
+)
 from . import timeline_image_routes  # noqa: F401
 from . import timeline_audio_routes  # noqa: F401
 from . import ltx_director_privacy_routes  # noqa: F401
@@ -17,7 +23,11 @@ class PromptRelay(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             LTXDirector,
-            LTXDirectorGuide
+            LTXDirectorGuide,
+            LTXIdentityAnchorLatentAware,
+            LTXIdentityAnchorFace,
+            LTXIdentityAnchorCombine,
+            LTXDirectorApplyIdentityAnchor,
         ]
 
 async def comfy_entrypoint() -> PromptRelay:
@@ -32,6 +42,10 @@ NODE_CLASS_MAPPINGS = {
     "LoadVideoUI": LoadVideoUI,
     "LTXDirector": LTXDirector,
     "LTXDirectorGuide": LTXDirectorGuide,
+    "LTXIdentityAnchorLatentAware": LTXIdentityAnchorLatentAware,
+    "LTXIdentityAnchorFace": LTXIdentityAnchorFace,
+    "LTXIdentityAnchorCombine": LTXIdentityAnchorCombine,
+    "LTXDirectorApplyIdentityAnchor": LTXDirectorApplyIdentityAnchor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -43,6 +57,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadVideoUI": "Load Video UI",
     "LTXDirector": "LTX Director",
     "LTXDirectorGuide": "LTX Director Guide",
+    "LTXIdentityAnchorLatentAware": "LTX Identity Anchor: Latent Aware",
+    "LTXIdentityAnchorFace": "LTX Identity Anchor: Face",
+    "LTXIdentityAnchorCombine": "LTX Identity Anchor: Combine",
+    "LTXDirectorApplyIdentityAnchor": "LTX Director Apply Identity Anchor",
 }
 
 WEB_DIRECTORY = "./js"
