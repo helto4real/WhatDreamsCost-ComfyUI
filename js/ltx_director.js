@@ -308,7 +308,7 @@ const STYLES = `
     flex-direction: column;
     width: 100%;
     flex-grow: 1; /* Automatically scales to fill node height */
-    min-height: 40px;
+    min-height: 80px;
   }
   .pr-prompt-area {
     width: 100%;
