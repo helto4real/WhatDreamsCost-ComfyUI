@@ -1275,7 +1275,7 @@ class TimelineEditor {
     if (this.guideStrengthWidget) this.guideStrengthWidget.value = "";
   }
 
-  async encryptPrivacyState({ renderAfter = false } = {}) {
+  async encryptPrivacyState({ renderAfter = false, markCanvasDirty = true } = {}) {
     if (!this.isPrivacyModeEnabled() || this.privacyLocked) return false;
     const sequence = ++this._privacyEncryptSeq;
     this.privacyBusy = true;
@@ -1286,7 +1286,7 @@ class TimelineEditor {
       if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = JSON.stringify(result.envelope);
       this.sanitizeWidgetsForPrivacy();
       this.setPrivacyStatus("", false);
-      if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      if (markCanvasDirty && window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
       if (renderAfter) this.render();
       return true;
     } catch (err) {
@@ -1609,6 +1609,12 @@ class TimelineEditor {
   createDOM() {
     this.wrapper = document.createElement("div");
     this.wrapper.className = "pr-wrapper";
+    for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
+      this.wrapper.addEventListener(eventName, (e) => {
+        if (eventName === "mouseup") this.onMouseUp(e);
+        else e.stopPropagation();
+      });
+    }
 
     this.wrapper.addEventListener("mouseenter", () => {
       this._isHovering = true;
@@ -1627,7 +1633,13 @@ class TimelineEditor {
 
     this.handleKeyDown = (e) => {
       const activeTag = document.activeElement ? document.activeElement.tagName : "";
-      if (activeTag === "INPUT" || activeTag === "TEXTAREA") return;
+      if (activeTag === "INPUT" || activeTag === "TEXTAREA") {
+        if (this.wrapper?.contains(document.activeElement)) {
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+        }
+        return;
+      }
 
       if ((e.key === "Delete" || e.key === "Backspace") && this.selectedIndex !== -1 && this._isHovering) {
         this.deleteSelectedSegment();
@@ -1879,7 +1891,8 @@ class TimelineEditor {
     this.promptInput = document.createElement("textarea");
     this.promptInput.className = "pr-prompt-area";
     this.promptInput.placeholder = "Enter prompt for selected segment...";
-    this.promptInput.addEventListener("input", () => {
+    this.promptInput.addEventListener("input", (e) => {
+      e.stopPropagation();
       if (this.privacyLocked) return;
       if (this.shouldHideTimelineImagesPrompts()) {
         this.updateUIFromSelection();
@@ -1887,10 +1900,15 @@ class TimelineEditor {
       }
       if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
         this.timeline.segments[this.selectedIndex].prompt = this.promptInput.value;
-        this.commitChanges();
+        this._promptEditDirty = true;
       }
-      this.updatePromptPrivacyVisibility();
     });
+    this.promptInput.addEventListener("blur", () => {
+      this.flushPromptEdit({ skipNodeResize: true });
+    });
+    for (const eventName of ["beforeinput", "keydown", "keyup", "keypress", "compositionstart", "compositionupdate", "compositionend"]) {
+      this.promptInput.addEventListener(eventName, (e) => e.stopPropagation());
+    }
 
     // --- Audio Info Area ---
     this.audioInfoArea = document.createElement("div");
@@ -4197,6 +4215,7 @@ class TimelineEditor {
   }
 
   onMouseDown(e) {
+    e.stopPropagation();
     if (e.button !== 0) return;
     const { x, y } = this.getMousePos(e);
 
@@ -4254,11 +4273,11 @@ class TimelineEditor {
     if (!hit) {
       // Only deselect if they clicked the same track but hit empty space
       const clickedTrack = y > RULER_HEIGHT + this.blockHeight ? "audio" : "image";
-      if (this.selectionType === clickedTrack) {
+      if (this.selectionType === clickedTrack && this.selectedIndex !== -1) {
         this.selectedIndex = -1;
         this.updateUIFromSelection();
+        this.render();
       }
-      this.render();
       return;
     }
 
@@ -4276,6 +4295,8 @@ class TimelineEditor {
       return;
     }
 
+    const previousSelectionType = this.selectionType;
+    const previousSelectedIndex = this.selectedIndex;
     this.selectionType = hit.track;
     const targetArray = hit.track === "audio" ? this.timeline.audioSegments : this.timeline.segments;
 
@@ -4293,26 +4314,35 @@ class TimelineEditor {
     }
 
     if (hit.track === "image" && this.isSourceVideoSegment(targetArray[hit.index])) {
-      this.selectedIndex = hit.index;
-      this.updateUIFromSelection();
-      this.render();
+      if (previousSelectionType !== hit.track || this.selectedIndex !== hit.index) {
+        this.selectedIndex = hit.index;
+        this.updateUIFromSelection();
+        this.render();
+      }
       return;
     }
 
     if (hit.type === "joint") {
       this.selectedIndex = hit.leftIndex;
-      this.updateUIFromSelection();
+      if (previousSelectionType !== hit.track || previousSelectedIndex !== hit.leftIndex) {
+        this.updateUIFromSelection();
+        this.render();
+      }
       this._dragType = "joint";
       this._dragTargetId = targetArray[hit.leftIndex].id;
       this._dragTargetIdRight = targetArray[hit.rightIndex].id;
     } else if (hit.type === "center") {
-      this.selectedIndex = hit.index;
-      this.updateUIFromSelection();
-      this._dragType = "center";
-    } else {
-      if (this.selectedIndex !== hit.index) {
+      if (previousSelectionType !== hit.track || this.selectedIndex !== hit.index) {
         this.selectedIndex = hit.index;
         this.updateUIFromSelection();
+        this.render();
+      }
+      this._dragType = "center";
+    } else {
+      if (previousSelectionType !== hit.track || this.selectedIndex !== hit.index) {
+        this.selectedIndex = hit.index;
+        this.updateUIFromSelection();
+        this.render();
       }
       this._dragType = hit.dir;
     }
@@ -4329,7 +4359,6 @@ class TimelineEditor {
     if (hit.type !== "joint") {
       this._dragTargetId = targetArray[hit.index].id;
     }
-    this.render();
   }
 
   onMouseMove(e) {
@@ -4662,8 +4691,10 @@ class TimelineEditor {
   }
 
   onMouseUp(e) {
+    e.stopPropagation();
     document.body.style.userSelect = "";
     if (this._isDragging) {
+      const shouldCommit = !!this._previewSegments;
       if (this._previewSegments) {
         const targetArray = this.selectionType === "audio" ? this.timeline.audioSegments : this.timeline.segments;
 
@@ -4690,11 +4721,17 @@ class TimelineEditor {
       this._previewSegments = null;
       this._ghostTrack = null;
       this.canvas.style.cursor = "default";
-      this.commitChanges();
+      if (shouldCommit) this.commitChanges();
     }
   }
 
   // --- Backend Data Sync ---
+  flushPromptEdit({ skipNodeResize = true } = {}) {
+    if (!this._promptEditDirty) return;
+    this._promptEditDirty = false;
+    this.commitChanges(true, skipNodeResize);
+  }
+
   buildTimelineSaveObject() {
     const sortedSegments = [...this.timeline.segments].sort((a, b) => a.start - b.start);
     return {
@@ -4710,7 +4747,7 @@ class TimelineEditor {
     };
   }
 
-  commitChanges(skipRender = false) {
+  commitChanges(skipRender = false, skipNodeResize = false) {
     let sortedSegments = [...this.timeline.segments].sort((a, b) => a.start - b.start);
     let contiguousLengths = [];
     let contiguousPrompts = [];
@@ -4782,19 +4819,21 @@ class TimelineEditor {
     }
 
     if (this.isPrivacyModeEnabled() && !this.privacyLocked) {
-      void this.encryptPrivacyState({ renderAfter: false });
+      void this.encryptPrivacyState({ renderAfter: false, markCanvasDirty: !skipNodeResize });
     }
 
     // Keep zoom slider max in sync with the current timeline duration.
     this.updateZoomSliderMax();
 
-    setTimeout(() => {
-      if (this.node && this.node.computeSize) {
-        const sz = this.node.computeSize();
-        this.node.size[1] = sz[1];
-        if (app.graph) app.graph.setDirtyCanvas(true, true);
-      }
-    }, 0);
+    if (!skipNodeResize) {
+      setTimeout(() => {
+        if (this.node && this.node.computeSize) {
+          const sz = this.node.computeSize();
+          this.node.size[1] = sz[1];
+          if (app.graph) app.graph.setDirtyCanvas(true, true);
+        }
+      }, 0);
+    }
 
     if (!skipRender) this.render();
   }
@@ -5835,6 +5874,7 @@ app.registerExtension({
       const onSerialize = nodeType.prototype.onSerialize;
       nodeType.prototype.onSerialize = function (info) {
         const editor = this._timelineEditor;
+        editor?.flushPromptEdit({ skipNodeResize: true });
         const privacyModeWidget = this.widgets?.find(w => w.name === "privacy_mode");
         const privacyPayloadWidget = this.widgets?.find(w => w.name === "privacy_payload");
         const privacyEnabled = widgetBoolValue(privacyModeWidget?.value);
