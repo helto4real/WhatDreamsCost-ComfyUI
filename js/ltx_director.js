@@ -2607,8 +2607,21 @@ class TimelineEditor {
     return { x, y };
   }
 
-  closePromptOptimizer() {
-    document.querySelector(".pr-prompt-optimizer-dialog")?.remove();
+  unloadPromptOptimizerModel(alias) {
+    if (!alias) return;
+    fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/models/unload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: alias }),
+    }).catch((err) => console.warn("Could not unload prompt optimizer model:", err));
+  }
+
+  closePromptOptimizer({ unloadModel = true } = {}) {
+    const dialog = document.querySelector(".pr-prompt-optimizer-dialog");
+    if (dialog && unloadModel) {
+      this.unloadPromptOptimizerModel(dialog.dataset.loadedModelAlias || "");
+    }
+    dialog?.remove();
   }
 
   async segmentImageDataUrl(seg) {
@@ -2761,6 +2774,7 @@ class TimelineEditor {
     const replaceBtn = overlay.querySelector(".replace");
     const modeButtons = [...overlay.querySelectorAll(".mode")];
     let mode = "sfw";
+    let loadedModelAlias = "";
 
     const hideImages = this.hideTimelineImagesPromptsEnabled();
     grid.classList.toggle("hide-images", hideImages);
@@ -2785,6 +2799,19 @@ class TimelineEditor {
       if (eta) parts.push(eta);
       if (progress.estimated && progress.phase === "generating") parts.push("estimated");
       progressText.textContent = parts.join(" · ");
+    };
+    const markLoadedModel = (alias) => {
+      loadedModelAlias = alias || "";
+      if (loadedModelAlias) {
+        overlay.dataset.loadedModelAlias = loadedModelAlias;
+      } else {
+        delete overlay.dataset.loadedModelAlias;
+      }
+    };
+    const unloadLoadedModel = (alias = loadedModelAlias) => {
+      if (!alias) return;
+      this.unloadPromptOptimizerModel(alias);
+      if (alias === loadedModelAlias) markLoadedModel("");
     };
     const setBusy = (busy) => {
       generateBtn.disabled = busy || this.privacyLocked;
@@ -2910,6 +2937,10 @@ class TimelineEditor {
         modeButtons.forEach((other) => other.classList.toggle("active", other === button));
       });
     });
+    modelSelect.addEventListener("change", () => {
+      const previous = loadedModelAlias;
+      if (previous && previous !== modelSelect.value) unloadLoadedModel(previous);
+    });
 
     generateBtn.addEventListener("click", async () => {
       if (this.privacyLocked) return;
@@ -2925,6 +2956,7 @@ class TimelineEditor {
         await new Promise((resolve) => requestAnimationFrame(resolve));
         const segments = await selectedPayloadRows();
         statusEl.textContent = "Starting prompt optimization...";
+        markLoadedModel(modelSelect.value);
         const started = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/optimize/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2973,7 +3005,8 @@ class TimelineEditor {
       this.commitChanges(true);
       this.render();
       if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
-      this.closePromptOptimizer();
+      unloadLoadedModel();
+      this.closePromptOptimizer({ unloadModel: false });
     });
 
     const refreshOptimizerStatus = async () => {

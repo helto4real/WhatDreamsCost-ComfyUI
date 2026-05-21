@@ -15,6 +15,7 @@ try:
         optimize_segments,
         save_hf_token,
         start_optimizer_job,
+        unload_optimizer_model,
     )
 except Exception:  # noqa: BLE001 - route registration is best-effort inside ComfyUI.
     web = None
@@ -28,6 +29,16 @@ if web is not None and server is not None:
     async def get_prompt_optimizer_models(_request):
         try:
             return web.json_response(get_model_statuses())
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+    @server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/models/unload")
+    async def post_prompt_optimizer_unload_model(request):
+        try:
+            payload = await request.json()
+            return web.json_response(unload_optimizer_model(payload.get("model") or None))
+        except PromptOptimizerError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001
             return web.json_response({"ok": False, "error": str(exc)}, status=500)
 

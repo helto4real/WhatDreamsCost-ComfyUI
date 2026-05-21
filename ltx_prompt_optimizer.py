@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import gc
 import importlib.util
 import io
 import json
@@ -342,6 +343,42 @@ def get_model_statuses() -> dict[str, Any]:
             }
         )
     return {"ok": True, "models": models}
+
+
+def unload_optimizer_model(alias: str | None = None) -> dict[str, Any]:
+    unloaded = []
+    if alias:
+        spec = resolve_model(alias)
+        keys = [spec.alias]
+    else:
+        keys = list(_LOADED_MODELS.keys())
+
+    torch_modules = []
+    for key in keys:
+        loaded = _LOADED_MODELS.pop(key, None)
+        if not loaded:
+            continue
+        unloaded.append(key)
+        torch_module = loaded.get("torch")
+        if torch_module is not None:
+            torch_modules.append(torch_module)
+        loaded.clear()
+
+    gc.collect()
+    for torch_module in torch_modules:
+        cuda = getattr(torch_module, "cuda", None)
+        if cuda is None or not callable(getattr(cuda, "is_available", None)):
+            continue
+        try:
+            if cuda.is_available():
+                cuda.empty_cache()
+                ipc_collect = getattr(cuda, "ipc_collect", None)
+                if callable(ipc_collect):
+                    ipc_collect()
+        except Exception:
+            pass
+
+    return {"ok": True, "unloaded": unloaded}
 
 
 def ensure_model_downloaded(

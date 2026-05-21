@@ -34,6 +34,46 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertEqual(fallback["status"], "ready")
         self.assertEqual(fallback["missing_dependencies"], [])
 
+    def test_unload_optimizer_model_removes_loaded_alias_and_clears_cuda(self):
+        class FakeCuda:
+            def __init__(self):
+                self.emptied = False
+                self.collected = False
+
+            def is_available(self):
+                return True
+
+            def empty_cache(self):
+                self.emptied = True
+
+            def ipc_collect(self):
+                self.collected = True
+
+        fake_cuda = FakeCuda()
+        fake_torch = types.SimpleNamespace(cuda=fake_cuda)
+        optimizer._LOADED_MODELS["qwen3_vl_4b_fast"] = {"torch": fake_torch, "model": object()}
+        optimizer._LOADED_MODELS["florence2_fast_caption"] = {"model": object()}
+        try:
+            result = optimizer.unload_optimizer_model("qwen3_vl_4b_fast")
+            self.assertEqual(result["unloaded"], ["qwen3_vl_4b_fast"])
+            self.assertNotIn("qwen3_vl_4b_fast", optimizer._LOADED_MODELS)
+            self.assertIn("florence2_fast_caption", optimizer._LOADED_MODELS)
+            self.assertTrue(fake_cuda.emptied)
+            self.assertTrue(fake_cuda.collected)
+        finally:
+            optimizer._LOADED_MODELS.pop("qwen3_vl_4b_fast", None)
+            optimizer._LOADED_MODELS.pop("florence2_fast_caption", None)
+
+    def test_unload_optimizer_model_without_alias_clears_all_loaded_models(self):
+        optimizer._LOADED_MODELS["qwen3_vl_4b_fast"] = {"model": object()}
+        optimizer._LOADED_MODELS["florence2_fast_caption"] = {"model": object()}
+        try:
+            result = optimizer.unload_optimizer_model()
+            self.assertEqual(set(result["unloaded"]), {"qwen3_vl_4b_fast", "florence2_fast_caption"})
+            self.assertEqual(optimizer._LOADED_MODELS, {})
+        finally:
+            optimizer._LOADED_MODELS.clear()
+
     def test_settings_status_without_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = optimizer.get_optimizer_settings_status(tmp)
