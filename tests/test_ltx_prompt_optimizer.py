@@ -74,6 +74,54 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         finally:
             optimizer._LOADED_MODELS.clear()
 
+    def test_vram_preflight_calls_comfy_and_torch_cleanup(self):
+        calls = []
+
+        class FakeCuda:
+            def is_available(self):
+                return True
+
+            def empty_cache(self):
+                calls.append("empty_cache")
+
+            def ipc_collect(self):
+                calls.append("ipc_collect")
+
+        fake_model_management = types.SimpleNamespace(
+            unload_all_models=lambda: calls.append("unload_all_models"),
+            cleanup_models=lambda: calls.append("cleanup_models"),
+            soft_empty_cache=lambda: calls.append("soft_empty_cache"),
+        )
+        fake_torch = types.SimpleNamespace(cuda=FakeCuda())
+        fake_comfy = types.ModuleType("comfy")
+        fake_comfy.model_management = fake_model_management
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "comfy": fake_comfy,
+                "comfy.model_management": fake_model_management,
+                "torch": fake_torch,
+            },
+        ):
+            result = optimizer.prompt_optimizer_vram_preflight()
+
+        self.assertEqual(result["ok"], True)
+        self.assertIn("comfy.model_management.unload_all_models", result["actions"])
+        self.assertIn("comfy.model_management.cleanup_models", result["actions"])
+        self.assertIn("comfy.model_management.soft_empty_cache", result["actions"])
+        self.assertIn("torch.cuda.empty_cache", result["actions"])
+        self.assertIn("torch.cuda.ipc_collect", result["actions"])
+        self.assertEqual(calls, ["unload_all_models", "cleanup_models", "soft_empty_cache", "empty_cache", "ipc_collect"])
+
+    def test_vram_preflight_succeeds_without_comfy_or_torch(self):
+        messages = []
+        with mock.patch.dict(sys.modules, {"comfy": None, "torch": None}):
+            result = optimizer.prompt_optimizer_vram_preflight(lambda message, *_: messages.append(message))
+        self.assertEqual(result["ok"], True)
+        self.assertIn("gc.collect", result["actions"])
+        self.assertIn("Releasing Comfy model cache", messages[0])
+
     def test_settings_status_without_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = optimizer.get_optimizer_settings_status(tmp)
@@ -299,11 +347,12 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
-                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                        result = optimizer.optimize_segments(
-                            {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
-                        )
+                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                    with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                            result = optimizer.optimize_segments(
+                                {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
+                            )
 
         self.assertEqual([item["prompt"] for item in result["results"]], ["generated-1", "generated-2"])
         self.assertEqual([label for label, _ in calls[1][0]], ["Previous", "Current", "Next"])
@@ -328,9 +377,10 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
-                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                        optimizer.optimize_segments({"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments})
+                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                    with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                            optimizer.optimize_segments({"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments})
 
         self.assertEqual([label for label, _ in calls[0][0]], ["Current"])
         self.assertEqual([image for _, image in calls[0][0]], ["image-b"])
@@ -352,12 +402,13 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         segments = [{"id": "a", "selected": True, "prompt": "She smiles wider", "type": "image"}]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
             with mock.patch.object(optimizer, "decode_image", return_value=None):
-                with mock.patch.object(optimizer, "_load_qwen_model", side_effect=fake_load):
-                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                        optimizer.optimize_segments(
-                            {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments},
-                            lambda message, current=None, total=None: messages.append(message),
-                        )
+                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                    with mock.patch.object(optimizer, "_load_qwen_model", side_effect=fake_load):
+                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                            optimizer.optimize_segments(
+                                {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments},
+                                lambda message, current=None, total=None: messages.append(message),
+                            )
 
         load_index = messages.index("Using loaded Qwen model 'qwen3_vl_4b_fast'.")
         generate_index = messages.index("Generating prompt 1 of 1...")
@@ -365,6 +416,50 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertLess(load_index, generate_index)
         self.assertLess(generate_index, completed_index)
         self.assertNotIn("Internal load status that should be ignored.", messages)
+
+    def test_optimize_qwen_runs_vram_preflight_before_model_load(self):
+        messages = []
+        calls = []
+
+        def fake_preflight(status):
+            calls.append("preflight")
+            status("Releasing Comfy model cache before loading optimizer model...")
+
+        def fake_load(_spec, _path, _status):
+            calls.append("load")
+            return {"loaded": True}
+
+        def fake_generate(_spec, _path, _images, _instruction, _status, loaded=None):
+            calls.append("generate")
+            return "generated"
+
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+            with mock.patch.object(optimizer, "decode_image", return_value=None):
+                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight", side_effect=fake_preflight):
+                    with mock.patch.object(optimizer, "_load_qwen_model", side_effect=fake_load):
+                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                            optimizer.optimize_segments(
+                                {
+                                    "model": "qwen3_vl_4b_fast",
+                                    "mode": "sfw",
+                                    "segments": [{"id": "a", "selected": True, "prompt": "She smiles", "type": "image"}],
+                                },
+                                lambda message, current=None, total=None: messages.append(message),
+                            )
+
+        self.assertEqual(calls, ["preflight", "load", "generate"])
+        self.assertIn("Releasing Comfy model cache before loading optimizer model...", messages)
+
+    def test_optimize_fallback_skips_vram_preflight(self):
+        with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight") as preflight:
+            optimizer.optimize_segments(
+                {
+                    "model": "fallback_text_backend",
+                    "mode": "sfw",
+                    "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
+                }
+            )
+        preflight.assert_not_called()
 
     def test_optimize_florence_uses_current_image_only_with_text_context(self):
         calls = []
@@ -383,11 +478,12 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
-                    with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
-                        result = optimizer.optimize_segments(
-                            {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
-                        )
+                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                    with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
+                        with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
+                            result = optimizer.optimize_segments(
+                                {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                            )
 
         self.assertEqual(result["results"][0]["prompt"], "florence generated")
         self.assertEqual(calls[0][0], "image-b")

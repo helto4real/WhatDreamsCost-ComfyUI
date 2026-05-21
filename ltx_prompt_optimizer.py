@@ -366,19 +366,60 @@ def unload_optimizer_model(alias: str | None = None) -> dict[str, Any]:
 
     gc.collect()
     for torch_module in torch_modules:
-        cuda = getattr(torch_module, "cuda", None)
-        if cuda is None or not callable(getattr(cuda, "is_available", None)):
-            continue
-        try:
-            if cuda.is_available():
-                cuda.empty_cache()
-                ipc_collect = getattr(cuda, "ipc_collect", None)
-                if callable(ipc_collect):
-                    ipc_collect()
-        except Exception:
-            pass
+        _clear_torch_cuda_cache(torch_module)
 
     return {"ok": True, "unloaded": unloaded}
+
+
+def _clear_torch_cuda_cache(torch_module: Any) -> list[str]:
+    actions = []
+    cuda = getattr(torch_module, "cuda", None)
+    if cuda is None or not callable(getattr(cuda, "is_available", None)):
+        return actions
+    try:
+        if cuda.is_available():
+            cuda.empty_cache()
+            actions.append("torch.cuda.empty_cache")
+            ipc_collect = getattr(cuda, "ipc_collect", None)
+            if callable(ipc_collect):
+                ipc_collect()
+                actions.append("torch.cuda.ipc_collect")
+    except Exception:
+        pass
+    return actions
+
+
+def prompt_optimizer_vram_preflight(status_cb: Any = None) -> dict[str, Any]:
+    status = status_cb or _noop_status
+    status("Releasing Comfy model cache before loading optimizer model...")
+    actions = []
+
+    try:
+        import comfy.model_management as model_management  # type: ignore[import-not-found]
+    except Exception:
+        model_management = None
+
+    if model_management is not None:
+        for hook_name in ("unload_all_models", "cleanup_models", "soft_empty_cache"):
+            hook = getattr(model_management, hook_name, None)
+            if not callable(hook):
+                continue
+            try:
+                hook()
+                actions.append(f"comfy.model_management.{hook_name}")
+            except Exception:
+                pass
+
+    gc.collect()
+    actions.append("gc.collect")
+    try:
+        import torch
+
+        actions.extend(_clear_torch_cuda_cache(torch))
+    except Exception:
+        pass
+
+    return {"ok": True, "actions": actions}
 
 
 def ensure_model_downloaded(
@@ -758,11 +799,14 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
             status(f"Preparing image context {generated_count} of {selected_total}...", generated_count, selected_total)
             if spec.backend == "qwen":
                 images = _qwen_context_images(segments, index, not cut)
+                prompt_optimizer_vram_preflight(status)
                 loaded = _load_qwen_model(spec, path, status)  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_qwen(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
             elif spec.backend == "florence":
                 image = decode_image(segment)
+                if image is not None:
+                    prompt_optimizer_vram_preflight(status)
                 loaded = _load_florence_model(spec, path, status) if image is not None else None  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_florence(spec, path, image, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
