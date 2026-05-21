@@ -573,8 +573,9 @@ def _generate_qwen(
     images: list[tuple[str, Image.Image]],
     instruction: str,
     status_cb: Any = None,
+    loaded: dict[str, Any] | None = None,
 ) -> str:
-    loaded = _load_qwen_model(spec, path, status_cb)
+    loaded = loaded or _load_qwen_model(spec, path, status_cb)
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
@@ -624,10 +625,11 @@ def _generate_florence(
     image: Image.Image | None,
     instruction: str,
     status_cb: Any = None,
+    loaded: dict[str, Any] | None = None,
 ) -> str:
     if image is None:
         return clean_prompt_text(instruction)
-    loaded = _load_florence_model(spec, path, status_cb)
+    loaded = loaded or _load_florence_model(spec, path, status_cb)
     model = loaded["model"]
     processor = loaded["processor"]
     torch = loaded["torch"]
@@ -719,12 +721,14 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
             status(f"Preparing image context {generated_count} of {selected_total}...", generated_count, selected_total)
             if spec.backend == "qwen":
                 images = _qwen_context_images(segments, index, not cut)
+                loaded = _load_qwen_model(spec, path, status)  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
-                optimized = _generate_qwen(spec, path, images, instruction, status)  # type: ignore[arg-type]
+                optimized = _generate_qwen(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
             elif spec.backend == "florence":
                 image = decode_image(segment)
+                loaded = _load_florence_model(spec, path, status) if image is not None else None  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
-                optimized = _generate_florence(spec, path, image, instruction, status)  # type: ignore[arg-type]
+                optimized = _generate_florence(spec, path, image, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
             else:
                 raise PromptOptimizerError(f"Unsupported optimizer backend: {spec.backend}")
             status(f"Completed prompt {generated_count} of {selected_total}.", generated_count, selected_total)

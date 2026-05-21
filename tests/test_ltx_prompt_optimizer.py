@@ -245,7 +245,7 @@ class LTXPromptOptimizerTests(unittest.TestCase):
     def test_optimize_qwen_uses_generated_previous_and_next_hint(self):
         calls = []
 
-        def fake_generate(_spec, _path, images, instruction, _status):
+        def fake_generate(_spec, _path, images, instruction, _status, loaded=None):
             calls.append((images, instruction))
             return f"generated-{len(calls)}"
 
@@ -259,10 +259,11 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                    result = optimizer.optimize_segments(
-                        {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
-                    )
+                with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                        result = optimizer.optimize_segments(
+                            {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
+                        )
 
         self.assertEqual([item["prompt"] for item in result["results"]], ["generated-1", "generated-2"])
         self.assertEqual([label for label, _ in calls[1][0]], ["Previous", "Current", "Next"])
@@ -273,7 +274,7 @@ class LTXPromptOptimizerTests(unittest.TestCase):
     def test_optimize_qwen_cut_uses_current_image_only(self):
         calls = []
 
-        def fake_generate(_spec, _path, images, instruction, _status):
+        def fake_generate(_spec, _path, images, instruction, _status, loaded=None):
             calls.append((images, instruction))
             return "generated"
 
@@ -287,8 +288,9 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                    optimizer.optimize_segments({"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments})
+                with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                        optimizer.optimize_segments({"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments})
 
         self.assertEqual([label for label, _ in calls[0][0]], ["Current"])
         self.assertEqual([image for _, image in calls[0][0]], ["image-b"])
@@ -296,10 +298,38 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertNotIn("She turns toward the camera", calls[0][1])
         self.assertNotIn("She starts laughing", calls[0][1])
 
+    def test_optimize_qwen_keeps_generation_phase_after_loading(self):
+        messages = []
+
+        def fake_load(_spec, _path, status):
+            status("Using loaded Qwen model 'qwen3_vl_4b_fast'.")
+            return {"loaded": True}
+
+        def fake_generate(_spec, _path, _images, _instruction, status, loaded=None):
+            status("Internal load status that should be ignored.")
+            return "generated"
+
+        segments = [{"id": "a", "selected": True, "prompt": "She smiles wider", "type": "image"}]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+            with mock.patch.object(optimizer, "decode_image", return_value=None):
+                with mock.patch.object(optimizer, "_load_qwen_model", side_effect=fake_load):
+                    with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                        optimizer.optimize_segments(
+                            {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments},
+                            lambda message, current=None, total=None: messages.append(message),
+                        )
+
+        load_index = messages.index("Using loaded Qwen model 'qwen3_vl_4b_fast'.")
+        generate_index = messages.index("Generating prompt 1 of 1...")
+        completed_index = messages.index("Completed prompt 1 of 1.")
+        self.assertLess(load_index, generate_index)
+        self.assertLess(generate_index, completed_index)
+        self.assertNotIn("Internal load status that should be ignored.", messages)
+
     def test_optimize_florence_uses_current_image_only_with_text_context(self):
         calls = []
 
-        def fake_generate(_spec, _path, image, instruction, _status):
+        def fake_generate(_spec, _path, image, instruction, _status, loaded=None):
             calls.append((image, instruction))
             return "florence generated"
 
@@ -313,10 +343,11 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
             with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
-                    result = optimizer.optimize_segments(
-                        {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
-                    )
+                with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
+                    with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
+                        result = optimizer.optimize_segments(
+                            {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                        )
 
         self.assertEqual(result["results"][0]["prompt"], "florence generated")
         self.assertEqual(calls[0][0], "image-b")
@@ -371,19 +402,20 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             with mock.patch.object(optimizer, "TIMING_FILE", Path(tmp) / "timing.json"):
                 with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
                     with mock.patch.object(optimizer, "decode_image", return_value=None):
-                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=RuntimeError("boom")):
-                            job_id = optimizer.start_optimizer_job(
-                                {
-                                    "model": "qwen3_vl_4b_fast",
-                                    "mode": "sfw",
-                                    "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
-                                }
-                            )
-                            status = optimizer.get_optimizer_job_status(job_id)
-                            deadline = time.time() + 2
-                            while status["state"] in {"queued", "running"} and time.time() < deadline:
-                                time.sleep(0.01)
+                        with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                            with mock.patch.object(optimizer, "_generate_qwen", side_effect=RuntimeError("boom")):
+                                job_id = optimizer.start_optimizer_job(
+                                    {
+                                        "model": "qwen3_vl_4b_fast",
+                                        "mode": "sfw",
+                                        "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
+                                    }
+                                )
                                 status = optimizer.get_optimizer_job_status(job_id)
+                                deadline = time.time() + 2
+                                while status["state"] in {"queued", "running"} and time.time() < deadline:
+                                    time.sleep(0.01)
+                                    status = optimizer.get_optimizer_job_status(job_id)
                 timing = optimizer.load_optimizer_timing()
         self.assertEqual(status["state"], "failed")
         self.assertEqual(timing["profiles"], {})
