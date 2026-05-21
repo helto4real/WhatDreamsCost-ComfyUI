@@ -59,6 +59,22 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertTrue(status["envTokenAvailable"])
         self.assertEqual(status["authSource"], "environment")
 
+    def test_timing_status_without_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            status = optimizer.load_optimizer_timing(tmp)
+        self.assertEqual(status["profiles"], {})
+
+    def test_record_prompt_timing_updates_profile(self):
+        spec = optimizer.resolve_model("qwen3_vl_4b_fast")
+        with tempfile.TemporaryDirectory() as tmp:
+            first = optimizer.record_prompt_timing(spec, 10.0, tmp)
+            second = optimizer.record_prompt_timing(spec, 20.0, tmp)
+            stored = optimizer.load_optimizer_timing(tmp)["profiles"][optimizer.model_timing_key(spec)]
+        self.assertEqual(first["sample_count"], 1)
+        self.assertEqual(second["sample_count"], 2)
+        self.assertAlmostEqual(stored["average_seconds"], 15.0)
+        self.assertAlmostEqual(stored["last_seconds"], 20.0)
+
     def test_missing_dependencies_are_reported(self):
         spec = optimizer.resolve_model("qwen3_vl_4b_fast")
         with mock.patch("importlib.util.find_spec", return_value=None):
@@ -308,36 +324,101 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("Next segment motion hint: She starts laughing", calls[0][1])
 
     def test_optimizer_job_completes(self):
-        job_id = optimizer.start_optimizer_job(
-            {
-                "model": "fallback_text_backend",
-                "mode": "sfw",
-                "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
-            }
-        )
-        status = optimizer.get_optimizer_job_status(job_id)
-        deadline = time.time() + 2
-        while status["state"] in {"queued", "running"} and time.time() < deadline:
-            time.sleep(0.01)
-            status = optimizer.get_optimizer_job_status(job_id)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(optimizer, "TIMING_FILE", Path(tmp) / "timing.json"):
+                job_id = optimizer.start_optimizer_job(
+                    {
+                        "model": "fallback_text_backend",
+                        "mode": "sfw",
+                        "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
+                    }
+                )
+                status = optimizer.get_optimizer_job_status(job_id)
+                deadline = time.time() + 2
+                while status["state"] in {"queued", "running"} and time.time() < deadline:
+                    time.sleep(0.01)
+                    status = optimizer.get_optimizer_job_status(job_id)
+                timing = optimizer.load_optimizer_timing()
         self.assertEqual(status["state"], "completed")
         self.assertEqual([item["id"] for item in status["results"]], ["a"])
+        self.assertEqual(status["progress"]["percent"], 100.0)
+        self.assertEqual(status["progress"]["eta_seconds"], 0.0)
+        profile = timing["profiles"][optimizer.model_timing_key(optimizer.resolve_model("fallback_text_backend"))]
+        self.assertEqual(profile["sample_count"], 1)
 
     def test_optimizer_job_stores_errors(self):
-        job_id = optimizer.start_optimizer_job(
-            {
-                "model": "fallback_text_backend",
-                "mode": "sfw",
-                "segments": [],
-            }
-        )
-        status = optimizer.get_optimizer_job_status(job_id)
-        deadline = time.time() + 2
-        while status["state"] in {"queued", "running"} and time.time() < deadline:
-            time.sleep(0.01)
-            status = optimizer.get_optimizer_job_status(job_id)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(optimizer, "TIMING_FILE", Path(tmp) / "timing.json"):
+                job_id = optimizer.start_optimizer_job(
+                    {
+                        "model": "fallback_text_backend",
+                        "mode": "sfw",
+                        "segments": [],
+                    }
+                )
+                status = optimizer.get_optimizer_job_status(job_id)
+                deadline = time.time() + 2
+                while status["state"] in {"queued", "running"} and time.time() < deadline:
+                    time.sleep(0.01)
+                    status = optimizer.get_optimizer_job_status(job_id)
+                timing = optimizer.load_optimizer_timing()
         self.assertEqual(status["state"], "failed")
         self.assertIn("Select at least one segment", status["error"])
+        self.assertEqual(timing["profiles"], {})
+
+    def test_failed_generation_does_not_update_timing_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(optimizer, "TIMING_FILE", Path(tmp) / "timing.json"):
+                with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+                    with mock.patch.object(optimizer, "decode_image", return_value=None):
+                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=RuntimeError("boom")):
+                            job_id = optimizer.start_optimizer_job(
+                                {
+                                    "model": "qwen3_vl_4b_fast",
+                                    "mode": "sfw",
+                                    "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
+                                }
+                            )
+                            status = optimizer.get_optimizer_job_status(job_id)
+                            deadline = time.time() + 2
+                            while status["state"] in {"queued", "running"} and time.time() < deadline:
+                                time.sleep(0.01)
+                                status = optimizer.get_optimizer_job_status(job_id)
+                timing = optimizer.load_optimizer_timing()
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(timing["profiles"], {})
+
+    def test_active_generation_status_estimates_percent_and_eta(self):
+        now = time.time()
+        job_id = "estimated-progress-test"
+        spec = optimizer.resolve_model("qwen3_vl_4b_fast")
+        with optimizer._OPTIMIZER_JOBS_LOCK:
+            optimizer._OPTIMIZER_JOBS[job_id] = {
+                "job_id": job_id,
+                "state": "running",
+                "message": "Generating prompt 2 of 4...",
+                "progress": optimizer._progress(2, 4, phase="generating"),
+                "results": [],
+                "error": "",
+                "created_at": now - 6,
+                "updated_at": now - 1,
+                "model_spec": spec,
+                "model_key": optimizer.model_timing_key(spec),
+                "profile_average_seconds": 10.0,
+                "prompt_started_at": now - 5,
+                "prompt_current": 2,
+                "prompt_durations": [],
+            }
+        try:
+            status = optimizer.get_optimizer_job_status(job_id)
+        finally:
+            with optimizer._OPTIMIZER_JOBS_LOCK:
+                optimizer._OPTIMIZER_JOBS.pop(job_id, None)
+        self.assertEqual(status["progress"]["phase"], "generating")
+        self.assertTrue(status["progress"]["estimated"])
+        self.assertGreater(status["progress"]["percent"], 25.0)
+        self.assertLess(status["progress"]["percent"], 50.0)
+        self.assertGreater(status["progress"]["eta_seconds"], 0)
 
 
 if __name__ == "__main__":

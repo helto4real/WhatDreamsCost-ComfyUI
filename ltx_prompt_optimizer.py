@@ -35,6 +35,7 @@ QWEN_DEPS = ("transformers", "huggingface_hub", "accelerate", "qwen_vl_utils")
 FLORENCE_DEPS = ("transformers", "huggingface_hub", "accelerate", "torchvision")
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 SETTINGS_FILE = CONFIG_DIR / "ltx_prompt_optimizer_settings.json"
+TIMING_FILE = CONFIG_DIR / "ltx_prompt_optimizer_timing.json"
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ MODEL_REGISTRY: dict[str, OptimizerModelSpec] = {
 _LOADED_MODELS: dict[str, dict[str, Any]] = {}
 _OPTIMIZER_JOBS: dict[str, dict[str, Any]] = {}
 _OPTIMIZER_JOBS_LOCK = threading.Lock()
+_TIMING_LOCK = threading.Lock()
 CUT_SCENE_RE = re.compile(r"\b(cut scene|hard cut|scene cut|new scene|transition)\b", re.I)
 
 
@@ -112,12 +114,34 @@ def _noop_status(_message: str, _current: int | None = None, _total: int | None 
     return None
 
 
-def _progress(current: int | None = None, total: int | None = None) -> dict[str, int | None]:
-    return {"current": current, "total": total}
+def _progress(
+    current: int | None = None,
+    total: int | None = None,
+    phase: str = "idle",
+    percent: float | None = None,
+    eta_seconds: float | None = None,
+    elapsed_seconds: float | None = None,
+    prompt_elapsed_seconds: float | None = None,
+    estimated: bool = False,
+) -> dict[str, Any]:
+    return {
+        "current": current,
+        "total": total,
+        "phase": phase,
+        "percent": percent,
+        "eta_seconds": eta_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "prompt_elapsed_seconds": prompt_elapsed_seconds,
+        "estimated": estimated,
+    }
 
 
 def settings_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
     return Path(base_dir) / SETTINGS_FILE.name if base_dir is not None else SETTINGS_FILE
+
+
+def timing_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
+    return Path(base_dir) / TIMING_FILE.name if base_dir is not None else TIMING_FILE
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
@@ -197,6 +221,76 @@ def get_optimizer_settings_status(base_dir: str | os.PathLike[str] | None = None
         "envTokenAvailable": env_available,
         "authSource": auth_source,
     }
+
+
+def model_timing_key(spec: OptimizerModelSpec) -> str:
+    return f"{spec.alias}:{spec.backend}"
+
+
+def load_optimizer_timing(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    path = timing_path(base_dir)
+    if not path.exists():
+        return {"version": 1, "profiles": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return {"version": 1, "profiles": {}}
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+    clean_profiles = {}
+    for key, profile in profiles.items():
+        if not isinstance(profile, dict):
+            continue
+        try:
+            average = float(profile.get("average_seconds") or 0)
+            count = int(profile.get("sample_count") or 0)
+            last = float(profile.get("last_seconds") or 0)
+            updated = float(profile.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if average <= 0 or count <= 0:
+            continue
+        clean_profiles[str(key)] = {
+            "average_seconds": average,
+            "sample_count": count,
+            "last_seconds": max(0.0, last),
+            "updated_at": max(0.0, updated),
+        }
+    return {"version": 1, "profiles": clean_profiles}
+
+
+def timing_profile_average(model_key: str, base_dir: str | os.PathLike[str] | None = None) -> float | None:
+    profile = load_optimizer_timing(base_dir).get("profiles", {}).get(model_key)
+    if not isinstance(profile, dict):
+        return None
+    average = float(profile.get("average_seconds") or 0)
+    return average if average > 0 else None
+
+
+def record_prompt_timing(
+    spec: OptimizerModelSpec,
+    duration_seconds: float,
+    base_dir: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    duration = max(0.001, float(duration_seconds or 0))
+    key = model_timing_key(spec)
+    with _TIMING_LOCK:
+        payload = load_optimizer_timing(base_dir)
+        profiles = payload.setdefault("profiles", {})
+        previous = profiles.get(key) if isinstance(profiles.get(key), dict) else {}
+        count = int(previous.get("sample_count") or 0)
+        average = float(previous.get("average_seconds") or 0)
+        new_count = count + 1
+        new_average = duration if count <= 0 or average <= 0 else average + ((duration - average) / new_count)
+        profiles[key] = {
+            "average_seconds": new_average,
+            "sample_count": new_count,
+            "last_seconds": duration,
+            "updated_at": time.time(),
+        }
+        _write_private_json(timing_path(base_dir), payload)
+        return profiles[key]
 
 
 def _models_dir() -> Path:
@@ -620,6 +714,7 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
         if spec.backend == "fallback":
             status(f"Generating fallback prompt {generated_count} of {selected_total}...", generated_count, selected_total)
             optimized = fallback_optimize_segment(segment, mode, index, total, previous_prompt, next_prompt)
+            status(f"Completed prompt {generated_count} of {selected_total}.", generated_count, selected_total)
         else:
             status(f"Preparing image context {generated_count} of {selected_total}...", generated_count, selected_total)
             if spec.backend == "qwen":
@@ -632,6 +727,7 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
                 optimized = _generate_florence(spec, path, image, instruction, status)  # type: ignore[arg-type]
             else:
                 raise PromptOptimizerError(f"Unsupported optimizer backend: {spec.backend}")
+            status(f"Completed prompt {generated_count} of {selected_total}.", generated_count, selected_total)
             status(f"Cleaning generated prompt {generated_count} of {selected_total}...", generated_count, selected_total)
             optimized = clean_prompt_text(optimized)
 
@@ -649,13 +745,102 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
     }
 
 
+def _phase_for_message(message: str) -> str:
+    lower = message.lower()
+    if lower.startswith("generating prompt") or lower.startswith("generating fallback prompt"):
+        return "generating"
+    if lower.startswith("completed prompt"):
+        return "completed_prompt"
+    if lower.startswith("cleaning"):
+        return "cleaning"
+    if lower.startswith("preparing"):
+        return "preparing"
+    if lower.startswith("downloading"):
+        return "downloading"
+    if lower.startswith("loading"):
+        return "loading"
+    if lower.startswith("done"):
+        return "completed"
+    if lower.startswith("checking") or lower.startswith("using cached") or lower.startswith("downloaded"):
+        return "setup"
+    return "running"
+
+
+def _job_average_seconds(job: dict[str, Any]) -> float | None:
+    durations = []
+    for value in job.get("prompt_durations") or []:
+        try:
+            duration = float(value)
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            durations.append(duration)
+    if durations:
+        return sum(durations) / len(durations)
+    average = float(job.get("profile_average_seconds") or 0)
+    return average if average > 0 else None
+
+
+def _estimated_job_progress(job: dict[str, Any], now: float | None = None) -> dict[str, Any]:
+    now = now or time.time()
+    progress = dict(job.get("progress") or {})
+    current = progress.get("current")
+    total = progress.get("total")
+    phase = str(progress.get("phase") or "idle")
+    elapsed = max(0.0, now - float(job.get("created_at") or now))
+    prompt_elapsed = None
+    percent = progress.get("percent")
+    eta_seconds = progress.get("eta_seconds")
+    estimated = bool(progress.get("estimated"))
+
+    if job.get("state") == "completed":
+        percent = 100.0
+        eta_seconds = 0.0
+        estimated = False
+        phase = "completed"
+    elif isinstance(current, int) and isinstance(total, int) and total > 0:
+        average = _job_average_seconds(job)
+        completed = max(0, min(total, current - 1))
+        if phase == "generating":
+            started = float(job.get("prompt_started_at") or now)
+            prompt_elapsed = max(0.0, now - started)
+            if average:
+                prompt_fraction = min(0.92, max(0.02, prompt_elapsed / average))
+                eta_seconds = max(0.0, average - prompt_elapsed) + (max(total - current, 0) * average)
+            else:
+                prompt_fraction = min(0.35, max(0.02, prompt_elapsed / 45.0))
+                eta_seconds = None
+            percent = ((completed + prompt_fraction) / total) * 100.0
+            estimated = True
+        elif phase in {"completed_prompt", "cleaning", "completed"}:
+            percent = (min(current, total) / total) * 100.0
+            eta_seconds = (max(total - current, 0) * average) if average else None
+            estimated = False
+        else:
+            percent = (completed / total) * 100.0
+            eta_seconds = ((total - completed) * average) if average else None
+            estimated = bool(average)
+
+    progress.update(
+        {
+            "phase": phase,
+            "percent": round(max(0.0, min(100.0, float(percent or 0.0))), 1),
+            "eta_seconds": round(float(eta_seconds), 1) if eta_seconds is not None else None,
+            "elapsed_seconds": round(elapsed, 1),
+            "prompt_elapsed_seconds": round(prompt_elapsed, 1) if prompt_elapsed is not None else None,
+            "estimated": estimated,
+        }
+    )
+    return progress
+
+
 def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True,
         "job_id": job["job_id"],
         "state": job["state"],
         "message": job["message"],
-        "progress": dict(job.get("progress") or {}),
+        "progress": _estimated_job_progress(job),
         "results": job.get("results") or [],
         "error": job.get("error") or "",
         "created_at": job.get("created_at"),
@@ -664,13 +849,29 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _set_job_status(job_id: str, message: str, current: int | None = None, total: int | None = None) -> None:
+    now = time.time()
     with _OPTIMIZER_JOBS_LOCK:
         job = _OPTIMIZER_JOBS.get(job_id)
         if not job:
             return
+        phase = _phase_for_message(message)
+        previous_phase = str((job.get("progress") or {}).get("phase") or "")
+        if phase == "generating" and (previous_phase != "generating" or job.get("prompt_current") != current):
+            job["prompt_started_at"] = now
+            job["prompt_current"] = current
+        elif phase == "completed_prompt":
+            started = job.get("prompt_started_at")
+            if started is not None and job.get("prompt_current") == current:
+                duration = max(0.001, now - float(started))
+                job.setdefault("prompt_durations", []).append(duration)
+                spec = job.get("model_spec")
+                if isinstance(spec, OptimizerModelSpec):
+                    record_prompt_timing(spec, duration)
+            job["completed_prompts"] = current
+            job["prompt_started_at"] = None
         job["message"] = message
-        job["progress"] = _progress(current, total)
-        job["updated_at"] = time.time()
+        job["progress"] = _progress(current, total, phase=phase)
+        job["updated_at"] = now
 
 
 def start_optimizer_job(payload: dict[str, Any]) -> str:
@@ -681,11 +882,12 @@ def start_optimizer_job(payload: dict[str, Any]) -> str:
             "job_id": job_id,
             "state": "queued",
             "message": "Queued prompt optimization...",
-            "progress": _progress(),
+            "progress": _progress(phase="queued", percent=0.0),
             "results": [],
             "error": "",
             "created_at": now,
             "updated_at": now,
+            "prompt_durations": [],
         }
 
     thread = threading.Thread(target=_run_optimizer_job, args=(job_id, payload), daemon=True)
@@ -694,11 +896,21 @@ def start_optimizer_job(payload: dict[str, Any]) -> str:
 
 
 def _run_optimizer_job(job_id: str, payload: dict[str, Any]) -> None:
+    try:
+        spec = resolve_model(payload.get("model"))
+        profile_average = timing_profile_average(model_timing_key(spec))
+    except Exception:
+        spec = None
+        profile_average = None
     with _OPTIMIZER_JOBS_LOCK:
         job = _OPTIMIZER_JOBS.get(job_id)
         if job:
             job["state"] = "running"
             job["message"] = "Starting prompt optimization..."
+            job["progress"] = _progress(phase="setup", percent=0.0)
+            job["model_spec"] = spec
+            job["model_key"] = model_timing_key(spec) if isinstance(spec, OptimizerModelSpec) else ""
+            job["profile_average_seconds"] = profile_average
             job["updated_at"] = time.time()
     try:
         result = optimize_segments(payload, lambda message, current=None, total=None: _set_job_status(job_id, message, current, total))
@@ -707,7 +919,14 @@ def _run_optimizer_job(job_id: str, payload: dict[str, Any]) -> None:
             if job:
                 job["state"] = "completed"
                 job["message"] = f"Done. Generated {len(result.get('results') or [])} prompt{'s' if len(result.get('results') or []) != 1 else ''}."
-                job["progress"] = _progress(len(result.get("results") or []), len(result.get("results") or []))
+                job["progress"] = _progress(
+                    len(result.get("results") or []),
+                    len(result.get("results") or []),
+                    phase="completed",
+                    percent=100.0,
+                    eta_seconds=0.0,
+                    estimated=False,
+                )
                 job["results"] = result.get("results") or []
                 job["error"] = ""
                 job["updated_at"] = time.time()
@@ -718,6 +937,9 @@ def _run_optimizer_job(job_id: str, payload: dict[str, Any]) -> None:
                 job["state"] = "failed"
                 job["message"] = "Prompt optimization failed."
                 job["error"] = str(exc)
+                progress = dict(job.get("progress") or {})
+                progress["phase"] = "failed"
+                job["progress"] = progress
                 job["updated_at"] = time.time()
 
 

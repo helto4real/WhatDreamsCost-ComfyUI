@@ -1231,6 +1231,33 @@ const STYLES = `
     font-size: 11px;
     min-height: 16px;
   }
+  .pr-prompt-progress {
+    display: none;
+    gap: 5px;
+    margin: 4px 0 8px;
+  }
+  .pr-prompt-progress.visible {
+    display: grid;
+  }
+  .pr-prompt-progress-track {
+    width: 100%;
+    height: 7px;
+    overflow: hidden;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+  }
+  .pr-prompt-progress-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #3f7bff, #69d2ff);
+    transition: width .25s ease;
+  }
+  .pr-prompt-progress-text {
+    color: #888;
+    font-size: 10px;
+    min-height: 12px;
+  }
 `;
 
 if (!document.getElementById("prompt-relay-styles")) {
@@ -2706,6 +2733,12 @@ class TimelineEditor {
           <button class="clear-token" type="button">Clear</button>
         </div>
         <div class="pr-prompt-optimizer-status"></div>
+        <div class="pr-prompt-progress" aria-hidden="true">
+          <div class="pr-prompt-progress-track">
+            <div class="pr-prompt-progress-bar"></div>
+          </div>
+          <div class="pr-prompt-progress-text"></div>
+        </div>
         <div class="pr-prompt-optimizer-grid"></div>
         <div class="pr-image-browser-actions">
           <button class="cancel" type="button">Cancel</button>
@@ -2716,6 +2749,9 @@ class TimelineEditor {
     const panel = overlay.querySelector(".pr-prompt-optimizer-panel");
     const modelSelect = overlay.querySelector(".model");
     const statusEl = overlay.querySelector(".pr-prompt-optimizer-status");
+    const progressWrap = overlay.querySelector(".pr-prompt-progress");
+    const progressBar = overlay.querySelector(".pr-prompt-progress-bar");
+    const progressText = overlay.querySelector(".pr-prompt-progress-text");
     const authStatusEl = overlay.querySelector(".auth-status");
     const hfTokenInput = overlay.querySelector(".hf-token");
     const saveTokenBtn = overlay.querySelector(".save-token");
@@ -2731,6 +2767,25 @@ class TimelineEditor {
     grid.classList.toggle("show-images", !hideImages);
 
     const rowState = new Map();
+    const formatEta = (seconds) => {
+      const value = Number(seconds);
+      if (!Number.isFinite(value) || value < 0.5) return "";
+      if (value < 60) return `about ${Math.ceil(value)}s left`;
+      return `about ${Math.ceil(value / 60)}m left`;
+    };
+    const updateProgressBar = (progress = {}, visible = true) => {
+      const percentValue = Number(progress.percent);
+      const percent = Number.isFinite(percentValue) ? Math.max(0, Math.min(100, percentValue)) : 0;
+      progressWrap.classList.toggle("visible", visible);
+      progressWrap.setAttribute("aria-hidden", visible ? "false" : "true");
+      progressBar.style.width = `${percent}%`;
+      const parts = [];
+      if (Number.isFinite(percentValue)) parts.push(`${Math.round(percent)}%`);
+      const eta = formatEta(progress.eta_seconds);
+      if (eta) parts.push(eta);
+      if (progress.estimated && progress.phase === "generating") parts.push("estimated");
+      progressText.textContent = parts.join(" · ");
+    };
     const setBusy = (busy) => {
       generateBtn.disabled = busy || this.privacyLocked;
       replaceBtn.disabled = busy || this.privacyLocked;
@@ -2838,6 +2893,7 @@ class TimelineEditor {
         if (selected && !payload.imageFile && item.imageB64) {
           preparedCount += 1;
           statusEl.textContent = `Preparing image ${preparedCount} of ${selectedRows.length} for upload...`;
+          updateProgressBar({ percent: selectedRows.length ? (preparedCount - 1) / selectedRows.length * 100 : 0 }, true);
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const seg = this.timeline.segments.find((candidate) => candidate.id === item.id);
           payload.image_data = await this.segmentImageDataUrl(seg);
@@ -2864,6 +2920,7 @@ class TimelineEditor {
       }
       setBusy(true);
       statusEl.textContent = "Preparing selected segments...";
+      updateProgressBar({ percent: 0 }, true);
       try {
         await new Promise((resolve) => requestAnimationFrame(resolve));
         const segments = await selectedPayloadRows();
@@ -2885,6 +2942,7 @@ class TimelineEditor {
           const progress = data.progress || {};
           const suffix = progress.current != null && progress.total != null ? ` (${progress.current} / ${progress.total})` : "";
           statusEl.textContent = `${data.message || "Working..."}${suffix}`;
+          updateProgressBar(progress, true);
           if (data.state === "completed") break;
           if (data.state === "failed") throw new Error(data.error || data.message || "Prompt optimization failed.");
           await new Promise((resolve) => setTimeout(resolve, 750));
@@ -2894,6 +2952,7 @@ class TimelineEditor {
           if (state) state.generated.value = result.prompt || "";
         }
         statusEl.textContent = `Generated ${data.results?.length || 0} prompt${(data.results?.length || 0) === 1 ? "" : "s"}.`;
+        updateProgressBar({ ...(data.progress || {}), percent: 100, eta_seconds: 0, estimated: false }, true);
       } catch (err) {
         statusEl.textContent = err.message;
       } finally {
