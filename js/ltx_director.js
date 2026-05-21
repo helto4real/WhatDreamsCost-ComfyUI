@@ -1275,17 +1275,19 @@ class TimelineEditor {
     if (this.guideStrengthWidget) this.guideStrengthWidget.value = "";
   }
 
-  async encryptPrivacyState({ renderAfter = false, markCanvasDirty = true } = {}) {
+  async encryptPrivacyState({ renderAfter = false, markCanvasDirty = true, showStatus = false } = {}) {
     if (!this.isPrivacyModeEnabled() || this.privacyLocked) return false;
     const sequence = ++this._privacyEncryptSeq;
     this.privacyBusy = true;
-    this.setPrivacyStatus("Encrypting private timeline data...", false);
+    if (showStatus) this.setPrivacyStatus("Encrypting private timeline data...", false);
     try {
       const result = await fetchPrivacyJson("encrypt", { state: this.getTimelinePrivacyState() });
       if (sequence !== this._privacyEncryptSeq) return false;
       if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = JSON.stringify(result.envelope);
       this.sanitizeWidgetsForPrivacy();
-      this.setPrivacyStatus("", false);
+      if (showStatus || this.privacyStatus.startsWith("Encrypting private timeline data")) {
+        this.setPrivacyStatus("", false);
+      }
       if (markCanvasDirty && window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
       if (renderAfter) this.render();
       return true;
@@ -1337,7 +1339,7 @@ class TimelineEditor {
 
     if (enabled) {
       setWidgetBoolValue(this.privacyModeWidget, true);
-      const ok = await this.encryptPrivacyState({ renderAfter: true });
+      const ok = await this.encryptPrivacyState({ renderAfter: true, showStatus: true });
       if (!ok) {
         setWidgetBoolValue(this.privacyModeWidget, false);
         if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = "";
@@ -2158,7 +2160,7 @@ class TimelineEditor {
     this.strengthValue.className = "pr-strength-input";
     this.strengthValue.value = "1.00";
     this.strengthValue.disabled = true;
-    this.strengthValue.style.cursor = "ew-resize";
+    this.strengthValue.style.cursor = "text";
 
     this.sourceVideoFramesLabel = document.createElement("span");
     this.sourceVideoFramesLabel.className = "pr-strength-label";
@@ -2178,66 +2180,6 @@ class TimelineEditor {
       let value = parseInt(e.target.value, 10);
       if (!Number.isFinite(value)) value = SOURCE_VIDEO_DEFAULT_GUIDE_FRAMES;
       this.setSelectedSourceVideoGuideFrames(value);
-    });
-
-    // Dragging logic for guide strength
-    let isDragging = false;
-    let startX = 0;
-    let startVal = 0;
-    let hasMoved = false;
-
-    this.strengthValue.addEventListener("mousedown", (e) => {
-      if (this.strengthValue.disabled) return;
-      startX = e.clientX;
-      startVal = parseFloat(this.strengthValue.value) || 1.0;
-      hasMoved = false;
-
-      const onMouseMove = (moveEvent) => {
-        const deltaX = moveEvent.clientX - startX;
-        if (Math.abs(deltaX) > 3) {
-          hasMoved = true;
-          isDragging = true;
-        }
-
-        if (isDragging) {
-          moveEvent.preventDefault();
-          const sensitivity = 0.002;
-          let newVal = startVal + deltaX * sensitivity;
-          const maxVal = this.selectionType === "audio" ? 2 : 1;
-
-          if (newVal < 0) newVal = 0;
-          if (newVal > maxVal) newVal = maxVal;
-
-          this.strengthValue.value = newVal.toFixed(2);
-
-          if (this.selectionType === "audio" && this.timeline.audioSegments[this.selectedIndex]) {
-            const seg = this.timeline.audioSegments[this.selectedIndex];
-            seg.volume = newVal;
-            this.commitChanges();
-            this.updateUIFromSelection();
-          } else if (this.selectionType === "image" && this.timeline.segments[this.selectedIndex]) {
-            const seg = this.timeline.segments[this.selectedIndex];
-            if (seg.type !== "text") {
-              seg.guideStrength = newVal;
-              this.commitChanges();
-            }
-          }
-        }
-      };
-
-      const onMouseUp = () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-
-        if (!hasMoved) {
-          this.strengthValue.focus();
-          this.strengthValue.select();
-        }
-        isDragging = false;
-      };
-
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
     });
 
     this.strengthValue.addEventListener("change", (e) => {

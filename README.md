@@ -204,6 +204,40 @@ LTX Identity Anchor: Combine.identity_anchor
 
 Leave `scale_strengths` enabled at first. This reduces both strengths slightly so the video does not become too stiff.
 
+### LTX Director Tiled Upscale Guide
+
+`LTX Director Tiled Upscale Guide` is an optional phase-two helper for LTX upscale workflows. It vendors the 10S tiled latent upsampler behavior, runs the latent upscale, then reapplies `LTX Director.guide_data` at the upscaled latent size.
+
+Recommended two-pass wiring:
+
+```text
+Phase 1 sampled video_latent
+  -> LTXVCropGuides
+  -> LTX Director Tiled Upscale Guide.latent
+
+LatentUpscaleModelLoader.LATENT_UPSCALE_MODEL
+  -> LTX Director Tiled Upscale Guide.upscale_model
+
+LTX Director.guide_data
+  -> LTX Director Tiled Upscale Guide.guide_data
+
+LTX Director Tiled Upscale Guide.latent
+  -> LTXVConcatAVLatent
+  -> light phase-two sampler
+```
+
+Use `LTX Director Tiled Upscale Settings` to adjust tiling:
+
+```text
+tile_size = 24
+overlap = 8
+max_size_for_no_tile = 32
+rotate_for_landscape = false
+debug = false
+```
+
+This node makes the upscale/guide order harder to wire incorrectly. If your main issue is color or prompt drift after upscaling, still use a light second sampler pass after this node; a tiled sampler is recommended when available.
+
 
 ## Multi Image Loader
 <img width="1280" height="720" alt="Multi_Image_Loader_Wide_Gif" src="https://github.com/user-attachments/assets/99b6afd8-5197-4e6c-81da-a7bd156c42c7" />
