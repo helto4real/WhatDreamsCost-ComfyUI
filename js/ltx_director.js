@@ -786,7 +786,7 @@ const STYLES = `
   }
   .pr-image-browser-controls {
     display: grid;
-    grid-template-columns: 1fr minmax(150px, 1fr) auto auto auto minmax(130px, 180px);
+    grid-template-columns: 1fr minmax(150px, 1fr) minmax(108px, 130px) auto auto auto minmax(130px, 180px);
     gap: 8px;
     align-items: center;
     margin-bottom: 8px;
@@ -816,6 +816,71 @@ const STYLES = `
   .pr-image-browser-actions button:hover,
   .pr-image-folder-row button:hover {
     background: #444;
+  }
+  .pr-image-sort-wrap {
+    position: relative;
+    min-width: 0;
+  }
+  .pr-image-sort-btn {
+    width: 100%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: #333;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 8px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .pr-image-sort-btn svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    flex: 0 0 auto;
+  }
+  .pr-image-sort-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 10002;
+    min-width: 144px;
+    background: #1d1c25;
+    border: 1px solid #3d3c4a;
+    border-radius: 6px;
+    padding: 6px;
+    display: none;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: 0 8px 22px rgba(0,0,0,.55);
+  }
+  .pr-image-sort-menu.is-open {
+    display: flex;
+  }
+  .pr-image-sort-option {
+    background: transparent !important;
+    border: none !important;
+    color: #aaa;
+    border-radius: 4px !important;
+    padding: 7px 10px !important;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .pr-image-sort-option:hover {
+    background: #2b2a34 !important;
+    color: #ddd;
+  }
+  .pr-image-sort-option.active {
+    color: #f2f2f4;
   }
   .pr-image-icon-btn {
     width: 32px;
@@ -2879,6 +2944,13 @@ class TimelineEditor {
         <div class="pr-image-browser-controls">
           <select class="folder" title="Choose configured image folder"></select>
           <input class="search" type="search" placeholder="Search images..." title="Search loaded image filenames and relative paths">
+          <div class="pr-image-sort-wrap">
+            <button class="sort pr-image-sort-btn" type="button" title="Sort images" aria-haspopup="true" aria-expanded="false">
+              <span>Newest</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="pr-image-sort-menu" role="menu"></div>
+          </div>
           <button class="scope pr-image-icon-btn" type="button" title="Recursive folder view" aria-label="Recursive folder view"></button>
           <button class="folder-add pr-image-icon-btn" type="button" title="Add configured image folder" aria-label="Add configured image folder">+</button>
           <button class="folder-remove pr-image-icon-btn" type="button" title="Remove configured image folder" aria-label="Remove configured image folder">−</button>
@@ -2902,6 +2974,9 @@ class TimelineEditor {
     const panel = overlay.querySelector(".pr-image-browser-panel");
     const folderSelect = overlay.querySelector(".folder");
     const searchInput = overlay.querySelector(".search");
+    const sortButton = overlay.querySelector(".sort");
+    const sortButtonLabel = sortButton.querySelector("span");
+    const sortMenu = overlay.querySelector(".pr-image-sort-menu");
     const scopeButton = overlay.querySelector(".scope");
     const folderAddButton = overlay.querySelector(".folder-add");
     const folderRemoveButton = overlay.querySelector(".folder-remove");
@@ -2915,6 +2990,13 @@ class TimelineEditor {
     let selectedImage = null;
     let recursive = true;
     let hideImagesUntilHover = true;
+    let sortMode = "newest";
+    const sortOptions = [
+      { value: "newest", label: "Newest" },
+      { value: "oldest", label: "Oldest" },
+      { value: "name-asc", label: "Name A-Z" },
+      { value: "name-desc", label: "Name Z-A" },
+    ];
 
     const syncScopeButton = () => {
       scopeButton.title = recursive ? "Show images recursively from subfolders" : "Show only images directly in this folder";
@@ -2938,12 +3020,54 @@ class TimelineEditor {
       columnsValue.textContent = String(columns);
     };
 
+    const compareImageNames = (a, b) => String(a.filename || "").localeCompare(String(b.filename || ""), undefined, { sensitivity: "base" });
+
+    const sortedImages = () => availableImages
+      .map((image, index) => ({ image, index }))
+      .sort((a, b) => {
+        let cmp = 0;
+        if (sortMode === "newest") {
+          cmp = Number(b.image.mtime || 0) - Number(a.image.mtime || 0);
+        } else if (sortMode === "oldest") {
+          cmp = Number(a.image.mtime || 0) - Number(b.image.mtime || 0);
+        } else if (sortMode === "name-desc") {
+          cmp = compareImageNames(b.image, a.image);
+        } else {
+          cmp = compareImageNames(a.image, b.image);
+        }
+        if (cmp !== 0) return cmp;
+        cmp = compareImageNames(a.image, b.image);
+        if (cmp !== 0) return cmp;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.image);
+
+    const syncSortMenu = () => {
+      const active = sortOptions.find((option) => option.value === sortMode) || sortOptions[0];
+      sortButtonLabel.textContent = active.label;
+      for (const button of sortMenu.querySelectorAll(".pr-image-sort-option")) {
+        button.classList.toggle("active", button.dataset.sortMode === sortMode);
+      }
+    };
+
+    const closeSortMenu = () => {
+      sortMenu.classList.remove("is-open");
+      sortButton.setAttribute("aria-expanded", "false");
+    };
+
+    const toggleSortMenu = () => {
+      const open = !sortMenu.classList.contains("is-open");
+      sortMenu.classList.toggle("is-open", open);
+      sortButton.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+
     const renderImageGrid = () => {
       grid.innerHTML = "";
       const query = searchInput.value.trim().toLowerCase();
+      const images = sortedImages();
       const visibleImages = query
-        ? availableImages.filter((image) => String(image.filename || "").toLowerCase().includes(query))
-        : availableImages;
+        ? images.filter((image) => String(image.filename || "").toLowerCase().includes(query))
+        : images;
 
       if (selectedImage && !visibleImages.some((image) => image.filename === selectedImage.filename)) {
         selectedImage = null;
@@ -3036,9 +3160,27 @@ class TimelineEditor {
     });
     searchInput.addEventListener("input", renderImageGrid);
     columnsInput.addEventListener("input", syncColumns);
+    sortButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSortMenu();
+    });
+    sortMenu.innerHTML = sortOptions.map((option) => (
+      `<button class="pr-image-sort-option${option.value === sortMode ? " active" : ""}" type="button" role="menuitem" data-sort-mode="${escapeHtml(option.value)}">${escapeHtml(option.label)}</button>`
+    )).join("");
+    sortMenu.addEventListener("click", (event) => {
+      const option = event.target.closest(".pr-image-sort-option");
+      if (!option) return;
+      sortMode = option.dataset.sortMode || "newest";
+      syncSortMenu();
+      closeSortMenu();
+      renderImageGrid();
+    });
     hoverHideButton.addEventListener("click", () => {
       hideImagesUntilHover = !hideImagesUntilHover;
       syncGridVisibility();
+    });
+    overlay.addEventListener("click", (event) => {
+      if (!event.target.closest(".pr-image-sort-wrap")) closeSortMenu();
     });
     overlay.querySelector(".cancel").addEventListener("click", () => this.closeTimelineImageBrowser());
     overlay.querySelector(".ok").addEventListener("click", async () => {
@@ -3064,6 +3206,7 @@ class TimelineEditor {
     document.body.appendChild(overlay);
     syncColumns();
     syncScopeButton();
+    syncSortMenu();
     syncGridVisibility();
     try {
       await loadFolders();
