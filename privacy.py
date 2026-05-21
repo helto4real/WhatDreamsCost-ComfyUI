@@ -22,6 +22,7 @@ except Exception as exc:  # noqa: BLE001 - dependency may be absent in ComfyUI i
 
 
 ENVELOPE_SCHEMA = "whatdreamscost.ltx-director"
+BYTE_ENVELOPE_SCHEMA = "whatdreamscost.ltx-director.bytes"
 ENVELOPE_VERSION = 1
 ALGORITHM = "AES-256-GCM"
 KEY_FILE_NAME = "privacy_key.json"
@@ -128,6 +129,53 @@ def is_encrypted_payload(value: Any) -> bool:
 
 def _aad(key_id: str) -> bytes:
     return f"{ENVELOPE_SCHEMA}|{ENVELOPE_VERSION}|{ALGORITHM}|{key_id}".encode("utf-8")
+
+
+def _bytes_aad(key_id: str, purpose: str) -> bytes:
+    return f"{BYTE_ENVELOPE_SCHEMA}|{ENVELOPE_VERSION}|{ALGORITHM}|{key_id}|{purpose}".encode("utf-8")
+
+
+def encrypt_bytes(data: bytes, purpose: str, base_dir: str | os.PathLike[str] | None = None) -> Dict[str, Any]:
+    key, key_id = _load_or_create_key(base_dir, create=True)
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, data, _bytes_aad(key_id, purpose))  # type: ignore[operator]
+    return {
+        "version": ENVELOPE_VERSION,
+        "schema": BYTE_ENVELOPE_SCHEMA,
+        "encrypted": True,
+        "algorithm": ALGORITHM,
+        "purpose": purpose,
+        "keyId": key_id,
+        "nonce": _b64url_encode(nonce),
+        "ciphertext": _b64url_encode(ciphertext),
+    }
+
+
+def decrypt_bytes(payload: Any, purpose: str, base_dir: str | os.PathLike[str] | None = None) -> bytes:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception as exc:
+            raise PrivacyError(f"Encrypted byte payload is not valid JSON: {exc}") from exc
+    if not (
+        isinstance(payload, Mapping)
+        and payload.get("encrypted") is True
+        and payload.get("schema") == BYTE_ENVELOPE_SCHEMA
+        and payload.get("algorithm") == ALGORITHM
+    ):
+        raise PrivacyError("Data is not an encrypted byte payload.")
+    if str(payload.get("purpose", "")) != purpose:
+        raise PrivacyError("Encrypted byte payload was created for a different purpose.")
+    key, key_id = _load_or_create_key(base_dir, create=False)
+    payload_key_id = str(payload.get("keyId", ""))
+    if payload_key_id != key_id:
+        raise PrivacyError("Encrypted byte payload was created with a different local privacy key.")
+    try:
+        nonce = _b64url_decode(str(payload.get("nonce", "")))
+        ciphertext = _b64url_decode(str(payload.get("ciphertext", "")))
+        return AESGCM(key).decrypt(nonce, ciphertext, _bytes_aad(key_id, purpose))  # type: ignore[operator]
+    except Exception as exc:  # noqa: BLE001 - auth/tag/key failures should be user-readable.
+        raise PrivacyError(f"Could not decrypt byte payload: {exc}") from exc
 
 
 def encrypt_state(state: Mapping[str, Any], base_dir: str | os.PathLike[str] | None = None) -> Dict[str, Any]:

@@ -220,6 +220,11 @@ async function fetchTimelineImageJson(url, options) {
   return data;
 }
 
+async function clearTimelineThumbnailCache() {
+  const data = await fetchTimelineImageJson("/wdc_timeline_images/thumb-cache/clear", { method: "POST" });
+  return data.cacheBust || String(Date.now());
+}
+
 async function fetchTimelineAudioJson(url, options) {
   const response = await api.fetchApi(url, options);
   const text = await response.text();
@@ -1135,6 +1140,7 @@ class TimelineEditor {
     this.privacyStatus = "";
     this._privacyEncryptSeq = 0;
     this._privateGlobalPrompt = this.getGlobalPromptWidget()?.value || "";
+    this.thumbnailCacheBust = "";
 
     this.timeline = parseInitial(this.timelineDataWidget?.value);
     this.ensureAudioTrackHeight();
@@ -1334,10 +1340,21 @@ class TimelineEditor {
   }
 
   async setPrivacyMode(enabled) {
-    if (this.privacyBusy) return;
+    if (this.privacyBusy && enabled) return;
     if (enabled === this.isPrivacyModeEnabled()) return;
+    const wasLocked = this.privacyLocked;
 
     if (enabled) {
+      this.privacyBusy = true;
+      try {
+        this.setPrivacyStatus("Clearing thumbnail cache...", wasLocked);
+        this.thumbnailCacheBust = await clearTimelineThumbnailCache();
+      } catch (err) {
+        this.setPrivacyStatus(`Thumbnail cache could not be cleared: ${err.message}`, wasLocked);
+        return;
+      } finally {
+        this.privacyBusy = false;
+      }
       setWidgetBoolValue(this.privacyModeWidget, true);
       const ok = await this.encryptPrivacyState({ renderAfter: true, showStatus: true });
       if (!ok) {
@@ -1351,9 +1368,23 @@ class TimelineEditor {
       return;
     }
     this._privacyEncryptSeq += 1;
+    this.privacyBusy = false;
+    this.privacyLocked = false;
+    this.privacyBusy = true;
+    try {
+      this.setPrivacyStatus("Clearing thumbnail cache...", false);
+      this.thumbnailCacheBust = await clearTimelineThumbnailCache();
+    } catch (err) {
+      this.thumbnailCacheBust = String(Date.now());
+      this.setPrivacyStatus(`Privacy disabled, but thumbnail cache could not be cleared: ${err.message}`, false);
+    } finally {
+      this.privacyBusy = false;
+    }
     setWidgetBoolValue(this.privacyModeWidget, false);
     if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = "";
-    this.setPrivacyStatus("", false);
+    if (!this.privacyStatus.startsWith("Privacy disabled, but thumbnail cache could not be cleared")) {
+      this.setPrivacyStatus("", false);
+    }
     this.commitChanges(true);
     if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
   }
@@ -2961,7 +2992,17 @@ class TimelineEditor {
     const loadImages = async () => {
       this.node.properties = this.node.properties || {};
       this.node.properties.wdc_timeline_last_folder_alias = folderSelect.value;
-      const data = await fetchTimelineImageJson(`/wdc_timeline_images/images?alias=${encodeURIComponent(folderSelect.value)}&recursive=${recursive ? "1" : "0"}`);
+      const params = new URLSearchParams({
+        alias: folderSelect.value,
+        recursive: recursive ? "1" : "0",
+      });
+      if (this.isPrivacyModeEnabled()) {
+        params.set("privacy", "1");
+      }
+      if (this.thumbnailCacheBust) {
+        params.set("cacheBust", this.thumbnailCacheBust);
+      }
+      const data = await fetchTimelineImageJson(`/wdc_timeline_images/images?${params.toString()}`);
       availableImages = data.images || [];
       selectedImage = null;
       renderImageGrid();
@@ -5330,13 +5371,13 @@ class TimelineEditor {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = this.isPrivacyModeEnabled();
-      cb.disabled = this.privacyBusy || this.privacyLocked;
+      cb.disabled = this.privacyBusy && !cb.checked;
       cb.style.cursor = cb.disabled ? "not-allowed" : "pointer";
       cb.title = "Encrypt workflow-saved timeline, media metadata, segment prompts, and global prompt.";
       cb.addEventListener("change", async () => {
         await this.setPrivacyMode(cb.checked);
         cb.checked = this.isPrivacyModeEnabled();
-        cb.disabled = this.privacyBusy || this.privacyLocked;
+        cb.disabled = this.privacyBusy && !cb.checked;
       });
       menu.appendChild(this._makeSettingRow("Privacy Mode", cb));
     }

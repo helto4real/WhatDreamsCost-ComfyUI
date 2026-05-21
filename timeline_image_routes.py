@@ -1,4 +1,5 @@
 import os
+import secrets
 import urllib.parse
 
 from aiohttp import web
@@ -12,10 +13,14 @@ from .timeline_image_config import (
     remove_folder,
     resolve_image_path,
 )
-from .timeline_image_io import list_images, make_thumbnail
+from .timeline_image_io import clear_thumbnail_cache, list_images, make_thumbnail
 
 
 ROUTE_PREFIX = "/wdc_timeline_images"
+
+
+def query_bool(value):
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
 
 
 def folder_payload():
@@ -63,15 +68,22 @@ async def get_images(request):
     try:
         alias = request.query.get("alias", "")
         recursive = request.query.get("recursive", "1").lower() not in {"0", "false", "no"}
+        privacy_mode = query_bool(request.query.get("privacy", ""))
+        cache_bust = request.query.get("cacheBust", "")
         folder = folder_by_alias(alias)
         if not os.path.isdir(folder.path):
             return web.json_response({"images": [], "warning": "Folder does not exist."})
 
         images = list_images(folder.path, recursive=recursive)
         for image in images:
+            thumb_params = {"alias": alias, "filename": image["filename"], "t": int(image["mtime"])}
+            if privacy_mode:
+                thumb_params["privacy"] = "1"
+            if cache_bust:
+                thumb_params["cacheBust"] = cache_bust
             image["thumb_url"] = (
                 f"{ROUTE_PREFIX}/thumb?"
-                + urllib.parse.urlencode({"alias": alias, "filename": image["filename"], "t": int(image["mtime"])})
+                + urllib.parse.urlencode(thumb_params)
             )
             image["image_url"] = (
                 f"{ROUTE_PREFIX}/image?"
@@ -87,13 +99,28 @@ async def refresh(request):
     return web.json_response({"status": "ok", "folders": folder_payload()})
 
 
+@server.PromptServer.instance.routes.post(f"{ROUTE_PREFIX}/thumb-cache/clear")
+async def clear_thumb_cache(_request):
+    try:
+        clear_thumbnail_cache()
+        return web.json_response({"status": "ok", "cacheBust": secrets.token_urlsafe(12)})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
 @server.PromptServer.instance.routes.get(f"{ROUTE_PREFIX}/thumb")
 async def get_thumb(request):
     try:
         alias = request.query.get("alias", "")
         filename = urllib.parse.unquote(request.query.get("filename", ""))
+        privacy_mode = query_bool(request.query.get("privacy", ""))
         path = resolve_image_path(alias, filename)
-        thumb = make_thumbnail(path)
+        thumb = make_thumbnail(path, privacy_mode=privacy_mode)
+        if privacy_mode:
+            return web.Response(
+                body=thumb,
+                headers={"Cache-Control": "private, no-store", "Content-Type": "image/webp"},
+            )
         return web.FileResponse(thumb, headers={"Cache-Control": "public, max-age=86400", "Content-Type": "image/webp"})
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=400)
