@@ -1074,6 +1074,163 @@ const STYLES = `
     color: #aaa;
     font-size: 12px;
   }
+  .pr-prompt-optimizer-panel {
+    width: 980px;
+  }
+  .pr-prompt-optimizer-controls {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) 150px auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+  .pr-prompt-optimizer-controls select {
+    background: #151515;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px;
+    min-width: 0;
+  }
+  .pr-prompt-auth-row {
+    display: grid;
+    grid-template-columns: auto minmax(170px, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+    background: #181818;
+    border: 1px solid #333;
+    border-radius: 5px;
+    padding: 7px;
+  }
+  .pr-prompt-auth-row span {
+    color: #aaa;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .pr-prompt-auth-row input {
+    background: #151515;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px;
+    min-width: 0;
+  }
+  .pr-prompt-auth-row button {
+    background: #333;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .pr-prompt-auth-row button:hover {
+    background: #444;
+  }
+  .pr-prompt-mode {
+    display: flex;
+    background: #151515;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 2px;
+    min-width: 0;
+  }
+  .pr-prompt-mode button {
+    flex: 1;
+    background: transparent;
+    color: #aaa;
+    border: none;
+    border-radius: 3px;
+    padding: 5px 8px;
+    cursor: pointer;
+  }
+  .pr-prompt-mode button.active {
+    background: #333;
+    color: #fff;
+  }
+  .pr-prompt-optimizer-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 58vh;
+    overflow: auto;
+    padding: 2px;
+  }
+  .pr-prompt-optimizer-row {
+    display: grid;
+    grid-template-columns: 24px 86px minmax(190px, 1fr) minmax(230px, 1.25fr);
+    gap: 8px;
+    align-items: stretch;
+    background: #181818;
+    border: 1px solid #444;
+    border-radius: 5px;
+    padding: 8px;
+    min-width: 0;
+  }
+  .pr-prompt-optimizer-check {
+    align-self: center;
+    justify-self: center;
+  }
+  .pr-prompt-optimizer-thumb {
+    position: relative;
+    min-width: 0;
+    background: #101010;
+    border: 1px solid #2d2d2d;
+    border-radius: 4px;
+    overflow: hidden;
+    aspect-ratio: 1 / 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #777;
+    font-size: 11px;
+  }
+  .pr-prompt-optimizer-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transition: opacity .12s ease;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-thumb img {
+    opacity: 0;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-thumb:hover img,
+  .pr-prompt-optimizer-grid.show-images .pr-prompt-optimizer-thumb img {
+    opacity: 1;
+  }
+  .pr-prompt-optimizer-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+  }
+  .pr-prompt-optimizer-label {
+    color: #aaa;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pr-prompt-optimizer-field textarea {
+    min-height: 72px;
+    resize: vertical;
+    background: #222;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 7px;
+    font-size: 12px;
+    line-height: 1.35;
+    box-sizing: border-box;
+    width: 100%;
+  }
+  .pr-prompt-optimizer-status {
+    color: #aaa;
+    font-size: 11px;
+    min-height: 16px;
+  }
 `;
 
 if (!document.getElementById("prompt-relay-styles")) {
@@ -1096,6 +1253,7 @@ const ICONS = {
   plus: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>`,
   fit: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><polyline points="8 7 3 12 8 17"></polyline><polyline points="16 7 21 12 16 17"></polyline></svg>`,
   gear: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
+  sparkle: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"></path><path d="M5 3l.7 1.8L7.5 5.5l-1.8.7L5 8l-.7-1.8-1.8-.7 1.8-.7z"></path></svg>`,
   close: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`
 };
 
@@ -1303,6 +1461,7 @@ class TimelineEditor {
   destroy() {
     cancelAnimationFrame(this._renderLoop);
     this.pauseAudio();
+    this.closePromptOptimizer();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
     if (this.handleNodeHoverMouseMove) window.removeEventListener("mousemove", this.handleNodeHoverMouseMove, true);
@@ -1945,11 +2104,26 @@ class TimelineEditor {
       window.open("https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI", "_blank");
     });
 
+    const optimizerBtn = document.createElement("button");
+    optimizerBtn.className = "pr-btn";
+    optimizerBtn.style.padding = "6px";
+    optimizerBtn.style.justifyContent = "center";
+    optimizerBtn.style.width = "28px";
+    optimizerBtn.style.height = "28px";
+    optimizerBtn.style.boxSizing = "border-box";
+    optimizerBtn.innerHTML = ICONS.sparkle;
+    optimizerBtn.title = "Prompt Optimizer";
+    optimizerBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.showPromptOptimizer();
+    });
+
     const btnGroup = document.createElement("div");
     btnGroup.style.display = "flex";
     btnGroup.style.gap = "6px";
     btnGroup.style.alignItems = "center";
     btnGroup.appendChild(toggleBtn);
+    btnGroup.appendChild(optimizerBtn);
     btnGroup.appendChild(helpBtn);
     btnGroup.appendChild(settingsBtn);
     rightGroup.appendChild(btnGroup);
@@ -2406,11 +2580,412 @@ class TimelineEditor {
     return { x, y };
   }
 
+  closePromptOptimizer() {
+    document.querySelector(".pr-prompt-optimizer-dialog")?.remove();
+  }
+
+  async segmentImageDataUrl(seg) {
+    const img = seg?.imgObj;
+    if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return "";
+    try {
+      const canvas = document.createElement("canvas");
+      const maxSide = 768;
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.88));
+      if (!blob) return "";
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(blob);
+      });
+    } catch (err) {
+      return "";
+    }
+  }
+
+  getPromptOptimizerSegments() {
+    return [...this.timeline.segments]
+      .filter((seg) => seg && seg.type !== "ghost")
+      .sort((a, b) => a.start - b.start)
+      .map((seg, order) => ({
+        id: seg.id,
+        order,
+        type: seg.type || "image",
+        start: Math.round(seg.start || 0),
+        length: Math.round(seg.length || 1),
+        prompt: seg.prompt || "",
+        direction: seg.prompt || "",
+        imageFile: seg.imageFile || "",
+        imageFolderAlias: seg.imageFolderAlias || "",
+        imageB64: seg.imageB64 || "",
+        label: seg.imageFile || seg.fileName || (seg.type === "text" ? "Text segment" : "Timeline image"),
+      }));
+  }
+
+  async loadPromptOptimizerModels(selectEl, statusEl) {
+    const data = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/models");
+    const preferred = this.node.properties?.wdc_prompt_optimizer_model || "qwen3_vl_4b_fast";
+    selectEl.innerHTML = "";
+    for (const model of data.models || []) {
+      const option = document.createElement("option");
+      option.value = model.alias;
+      const state = model.status === "ready" || model.status === "downloaded" ? "ready" : model.status.replace(/_/g, " ");
+      option.textContent = `${model.alias} (${state})`;
+      option.title = model.missing_dependencies?.length
+        ? `Missing: ${model.missing_dependencies.join(", ")}`
+        : model.repo_id;
+      selectEl.appendChild(option);
+    }
+    if ([...selectEl.options].some((option) => option.value === preferred)) {
+      selectEl.value = preferred;
+    }
+    const active = (data.models || []).find((model) => model.alias === selectEl.value);
+    const updateStatus = () => {
+      const model = (data.models || []).find((item) => item.alias === selectEl.value);
+      if (!model) return;
+      if (model.missing_dependencies?.length) {
+        statusEl.textContent = `Missing optional packages: ${model.missing_dependencies.join(", ")}`;
+      } else if (model.downloaded || model.backend === "fallback") {
+        statusEl.textContent = `${model.alias} is ready.`;
+      } else {
+        statusEl.textContent = `${model.alias} will auto-download on Generate.`;
+      }
+    };
+    if (selectEl._promptOptimizerChangeHandler) {
+      selectEl.removeEventListener("change", selectEl._promptOptimizerChangeHandler);
+    }
+    selectEl._promptOptimizerChangeHandler = () => {
+      this.node.properties = this.node.properties || {};
+      this.node.properties.wdc_prompt_optimizer_model = selectEl.value;
+      updateStatus();
+    };
+    selectEl.addEventListener("change", selectEl._promptOptimizerChangeHandler);
+    if (active) updateStatus();
+  }
+
+  async loadPromptOptimizerSettings(statusEl, inputEl = null) {
+    const data = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/settings");
+    if (inputEl) inputEl.value = "";
+    if (data.tokenConfigured) {
+      statusEl.textContent = "HF token: saved locally.";
+    } else if (data.envTokenAvailable) {
+      statusEl.textContent = "HF token: using environment token.";
+    } else {
+      statusEl.textContent = "HF token: missing, gated models may fail.";
+    }
+    statusEl.title = data.configPath || "";
+    return data;
+  }
+
+  showPromptOptimizer() {
+    this.closePromptOptimizer();
+
+    const rows = this.getPromptOptimizerSegments();
+    const overlay = document.createElement("div");
+    overlay.className = "pr-image-browser-dialog pr-prompt-optimizer-dialog";
+    overlay.innerHTML = `
+      <div class="pr-image-browser-panel pr-prompt-optimizer-panel">
+        <h3>LTX Prompt Optimizer</h3>
+        <div class="pr-prompt-optimizer-controls">
+          <select class="model" title="Local caption/optimizer model"></select>
+          <div class="pr-prompt-mode" role="group" aria-label="Prompt mode">
+            <button class="mode active" type="button" data-mode="sfw">SFW</button>
+            <button class="mode" type="button" data-mode="nsfw">NSFW</button>
+          </div>
+          <button class="generate" type="button">Generate</button>
+        </div>
+        <div class="pr-prompt-auth-row">
+          <span class="auth-status">HF token: checking...</span>
+          <input class="hf-token" type="password" autocomplete="off" placeholder="hf_... access token">
+          <button class="save-token" type="button">Save</button>
+          <button class="clear-token" type="button">Clear</button>
+        </div>
+        <div class="pr-prompt-optimizer-status"></div>
+        <div class="pr-prompt-optimizer-grid"></div>
+        <div class="pr-image-browser-actions">
+          <button class="cancel" type="button">Cancel</button>
+          <button class="replace" type="button">Replace</button>
+        </div>
+      </div>`;
+
+    const panel = overlay.querySelector(".pr-prompt-optimizer-panel");
+    const modelSelect = overlay.querySelector(".model");
+    const statusEl = overlay.querySelector(".pr-prompt-optimizer-status");
+    const authStatusEl = overlay.querySelector(".auth-status");
+    const hfTokenInput = overlay.querySelector(".hf-token");
+    const saveTokenBtn = overlay.querySelector(".save-token");
+    const clearTokenBtn = overlay.querySelector(".clear-token");
+    const grid = overlay.querySelector(".pr-prompt-optimizer-grid");
+    const generateBtn = overlay.querySelector(".generate");
+    const replaceBtn = overlay.querySelector(".replace");
+    const modeButtons = [...overlay.querySelectorAll(".mode")];
+    let mode = "sfw";
+
+    const hideImages = this.hideTimelineImagesPromptsEnabled();
+    grid.classList.toggle("hide-images", hideImages);
+    grid.classList.toggle("show-images", !hideImages);
+
+    const rowState = new Map();
+    const setBusy = (busy) => {
+      generateBtn.disabled = busy || this.privacyLocked;
+      replaceBtn.disabled = busy || this.privacyLocked;
+      modelSelect.disabled = busy || this.privacyLocked;
+      hfTokenInput.disabled = busy || this.privacyLocked;
+      saveTokenBtn.disabled = busy || this.privacyLocked;
+      clearTokenBtn.disabled = busy || this.privacyLocked;
+      for (const button of modeButtons) button.disabled = busy || this.privacyLocked;
+    };
+
+    const renderRows = () => {
+      grid.innerHTML = "";
+      rowState.clear();
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "pr-prompt-optimizer-status";
+        empty.textContent = "No timeline segments are available to optimize.";
+        grid.appendChild(empty);
+        generateBtn.disabled = true;
+        replaceBtn.disabled = true;
+        return;
+      }
+
+      for (const item of rows) {
+        const row = document.createElement("div");
+        row.className = "pr-prompt-optimizer-row";
+        row.dataset.segmentId = item.id;
+
+        const check = document.createElement("input");
+        check.type = "checkbox";
+        check.className = "pr-prompt-optimizer-check";
+        check.checked = true;
+        check.title = "Optimize this segment";
+
+        const thumb = document.createElement("div");
+        thumb.className = "pr-prompt-optimizer-thumb";
+        if (item.imageB64) {
+          const img = document.createElement("img");
+          img.src = item.imageB64;
+          img.alt = "";
+          thumb.appendChild(img);
+        } else {
+          thumb.textContent = item.type === "text" ? "Text" : "Image";
+        }
+
+        const directionWrap = document.createElement("label");
+        directionWrap.className = "pr-prompt-optimizer-field";
+        const directionLabel = document.createElement("span");
+        directionLabel.className = "pr-prompt-optimizer-label";
+        directionLabel.textContent = `${item.order + 1}. ${item.label}`;
+        const direction = document.createElement("textarea");
+        direction.value = item.prompt;
+        direction.placeholder = "Direction or existing segment prompt...";
+        directionWrap.appendChild(directionLabel);
+        directionWrap.appendChild(direction);
+
+        const generatedWrap = document.createElement("label");
+        generatedWrap.className = "pr-prompt-optimizer-field";
+        const generatedLabel = document.createElement("span");
+        generatedLabel.className = "pr-prompt-optimizer-label";
+        generatedLabel.textContent = "Optimized LTX prompt";
+        const generated = document.createElement("textarea");
+        generated.value = item.prompt;
+        generated.placeholder = "Generated prompt will appear here...";
+        generatedWrap.appendChild(generatedLabel);
+        generatedWrap.appendChild(generated);
+
+        for (const input of [check, direction, generated]) {
+          input.disabled = this.privacyLocked;
+          for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
+            input.addEventListener(eventName, (event) => event.stopPropagation());
+          }
+        }
+
+        row.appendChild(check);
+        row.appendChild(thumb);
+        row.appendChild(directionWrap);
+        row.appendChild(generatedWrap);
+        grid.appendChild(row);
+        rowState.set(item.id, { item, check, direction, generated });
+      }
+    };
+
+    const selectedPayloadRows = async () => {
+      const payloadRows = [];
+      const selectedRows = rows.filter((item) => rowState.get(item.id)?.check.checked);
+      let preparedCount = 0;
+      for (const item of rows) {
+        const state = rowState.get(item.id);
+        const selected = !!state?.check.checked;
+        const payload = {
+          id: item.id,
+          order: item.order,
+          type: item.type,
+          start: item.start,
+          length: item.length,
+          selected,
+          direction: state?.direction.value || "",
+          prompt: state?.direction.value || "",
+          imageFile: item.imageFile || "",
+          imageFolderAlias: item.imageFolderAlias || "",
+          label: item.label || "",
+        };
+
+        if (selected && !payload.imageFile && item.imageB64) {
+          preparedCount += 1;
+          statusEl.textContent = `Preparing image ${preparedCount} of ${selectedRows.length} for upload...`;
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const seg = this.timeline.segments.find((candidate) => candidate.id === item.id);
+          payload.image_data = await this.segmentImageDataUrl(seg);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        payloadRows.push(payload);
+      }
+      return payloadRows;
+    };
+
+    modeButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        mode = button.dataset.mode || "sfw";
+        modeButtons.forEach((other) => other.classList.toggle("active", other === button));
+      });
+    });
+
+    generateBtn.addEventListener("click", async () => {
+      if (this.privacyLocked) return;
+      const selectedCount = [...rowState.values()].filter((state) => state.check.checked).length;
+      if (!selectedCount) {
+        statusEl.textContent = "Select at least one segment to optimize.";
+        return;
+      }
+      setBusy(true);
+      statusEl.textContent = "Preparing selected segments...";
+      try {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const segments = await selectedPayloadRows();
+        statusEl.textContent = "Starting prompt optimization...";
+        const started = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/optimize/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: modelSelect.value,
+            mode,
+            duration_frames: this.getDurationFrames(),
+            frame_rate: this.getFrameRate(),
+            segments,
+          }),
+        });
+        let data = null;
+        while (true) {
+          data = await fetchTimelineImageJson(`/wdc_ltx_prompt_optimizer/optimize/status?job_id=${encodeURIComponent(started.job_id)}`);
+          const progress = data.progress || {};
+          const suffix = progress.current != null && progress.total != null ? ` (${progress.current} / ${progress.total})` : "";
+          statusEl.textContent = `${data.message || "Working..."}${suffix}`;
+          if (data.state === "completed") break;
+          if (data.state === "failed") throw new Error(data.error || data.message || "Prompt optimization failed.");
+          await new Promise((resolve) => setTimeout(resolve, 750));
+        }
+        for (const result of data.results || []) {
+          const state = rowState.get(result.id);
+          if (state) state.generated.value = result.prompt || "";
+        }
+        statusEl.textContent = `Generated ${data.results?.length || 0} prompt${(data.results?.length || 0) === 1 ? "" : "s"}.`;
+      } catch (err) {
+        statusEl.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    replaceBtn.addEventListener("click", () => {
+      if (this.privacyLocked) return;
+      for (const state of rowState.values()) {
+        if (!state.check.checked) continue;
+        const seg = this.timeline.segments.find((candidate) => candidate.id === state.item.id);
+        if (!seg) continue;
+        seg.prompt = state.generated.value || "";
+      }
+      this.flushPromptEdit({ skipNodeResize: true });
+      this.updateUIFromSelection();
+      this.commitChanges(true);
+      this.render();
+      if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      this.closePromptOptimizer();
+    });
+
+    const refreshOptimizerStatus = async () => {
+      await this.loadPromptOptimizerSettings(authStatusEl, hfTokenInput);
+      await this.loadPromptOptimizerModels(modelSelect, statusEl);
+    };
+
+    saveTokenBtn.addEventListener("click", async () => {
+      if (this.privacyLocked) return;
+      setBusy(true);
+      try {
+        await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hf_token: hfTokenInput.value || "" }),
+        });
+        await refreshOptimizerStatus();
+      } catch (err) {
+        authStatusEl.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    clearTokenBtn.addEventListener("click", async () => {
+      if (this.privacyLocked) return;
+      setBusy(true);
+      try {
+        await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clear: true }),
+        });
+        await refreshOptimizerStatus();
+      } catch (err) {
+        authStatusEl.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    overlay.querySelector(".cancel").addEventListener("click", () => this.closePromptOptimizer());
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) this.closePromptOptimizer();
+    });
+    for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
+      panel.addEventListener(eventName, (event) => event.stopPropagation());
+    }
+    for (const input of [hfTokenInput, saveTokenBtn, clearTokenBtn, modelSelect]) {
+      for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
+        input.addEventListener(eventName, (event) => event.stopPropagation());
+      }
+    }
+
+    document.body.appendChild(overlay);
+    renderRows();
+    if (this.privacyLocked) {
+      statusEl.textContent = "Private timeline data is locked. Decrypt it before optimizing prompts.";
+      setBusy(false);
+    } else {
+      refreshOptimizerStatus().catch((err) => {
+        statusEl.textContent = err.message;
+      });
+    }
+  }
+
   closeTimelineImageBrowser() {
     if (document.querySelector(".pr-audio-browser-dialog")) {
       this.closeTimelineAudioBrowser();
     }
-    document.querySelector(".pr-image-browser-dialog:not(.pr-audio-browser-dialog)")?.remove();
+    document.querySelector(".pr-image-browser-dialog:not(.pr-audio-browser-dialog):not(.pr-prompt-optimizer-dialog)")?.remove();
     document.querySelector(".pr-image-large-preview")?.remove();
   }
 

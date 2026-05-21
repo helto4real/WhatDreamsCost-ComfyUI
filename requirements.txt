@@ -1,0 +1,6 @@
+transformers>=4.57.0
+huggingface-hub
+accelerate
+qwen-vl-utils
+torchvision
+Pillow
