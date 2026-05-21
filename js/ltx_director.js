@@ -1165,7 +1165,7 @@ class TimelineEditor {
     this._lastWidth = 0;
     this._hoveredGapIdx = -1;
     this._isHovering = false;
-    this._isNodeHovering = true;
+    this._isNodeHovering = false;
 
     // Playback state
     this.currentFrame = 0;
@@ -1728,6 +1728,15 @@ class TimelineEditor {
 
     this.handleNodeHoverMouseMove = (e) => this.updateNodeHoverState(e);
     window.addEventListener("mousemove", this.handleNodeHoverMouseMove, true);
+
+    requestAnimationFrame(() => {
+      if (!this.wrapper) return;
+      this._isNodeHovering = this.wrapper.matches(":hover");
+      if (this.hideTimelineImagesPromptsEnabled()) {
+        this.updatePromptPrivacyVisibility();
+        this.render();
+      }
+    });
 
     this.handleKeyDown = (e) => {
       const activeTag = document.activeElement ? document.activeElement.tagName : "";
