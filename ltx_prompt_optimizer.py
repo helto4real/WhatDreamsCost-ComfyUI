@@ -101,6 +101,7 @@ MODEL_REGISTRY: dict[str, OptimizerModelSpec] = {
 _LOADED_MODELS: dict[str, dict[str, Any]] = {}
 _OPTIMIZER_JOBS: dict[str, dict[str, Any]] = {}
 _OPTIMIZER_JOBS_LOCK = threading.Lock()
+CUT_SCENE_RE = re.compile(r"\b(cut scene|hard cut|scene cut|new scene|transition)\b", re.I)
 
 
 class PromptOptimizerError(RuntimeError):
@@ -351,26 +352,53 @@ def _sentence_join(parts: list[str]) -> str:
     return ". ".join(p.rstrip(".") for p in out if p).strip()
 
 
-def fallback_optimize_segment(segment: dict[str, Any], mode: str, index: int, total: int) -> str:
+def segment_direction_text(segment: dict[str, Any] | None) -> str:
+    if not isinstance(segment, dict):
+        return ""
+    return clean_prompt_text(segment.get("direction") or segment.get("prompt"))
+
+
+def segment_requests_cut(segment: dict[str, Any]) -> bool:
+    return bool(CUT_SCENE_RE.search(segment_direction_text(segment)))
+
+
+def fallback_optimize_segment(
+    segment: dict[str, Any],
+    mode: str,
+    index: int,
+    total: int,
+    previous_prompt: str = "",
+    next_prompt: str = "",
+) -> str:
     direction = clean_prompt_text(segment.get("direction") or segment.get("prompt"))
     label = "opening" if index == 0 else "closing" if index == total - 1 else "continuing"
+    cut = segment_requests_cut(segment)
     if direction:
         core = direction
     elif segment.get("type") == "text":
         core = "A text-driven transition continues the scene with clear subject motion"
     else:
-        core = "The visible subject moves naturally through the scene"
+        core = "The visible subject moves naturally with clear action and camera movement"
 
     tone = (
         "Use explicit adult visual language only for visible adult content"
         if mode == "nsfw"
         else "Keep the description cinematic and non-explicit"
     )
+    continuity = ""
+    if not cut:
+        continuity = _sentence_join(
+            [
+                f"Continue from: {previous_prompt}" if clean_prompt_text(previous_prompt) else "",
+                f"Move toward: {next_prompt}" if clean_prompt_text(next_prompt) else "",
+            ]
+        )
     return _sentence_join(
         [
             core,
             f"{label.capitalize()} moment in the video timeline, described in present tense",
-            "include concrete subject action, expression, camera motion, lighting, and scene continuity",
+            "focus on action, expression changes, camera motion, temporal movement, and visible or implied sound cues",
+            continuity,
             tone,
         ]
     )
@@ -386,17 +414,30 @@ def build_optimizer_instruction(
 ) -> str:
     direction = clean_prompt_text(segment.get("direction") or segment.get("prompt"))
     rating = "NSFW/unredacted" if mode == "nsfw" else "SFW"
+    cut = segment_requests_cut(segment)
+    previous_prompt = "" if cut else clean_prompt_text(previous_prompt)
+    next_prompt = "" if cut else clean_prompt_text(next_prompt)
+    continuity = (
+        "Treat this segment as a new cut; do not bridge motion from adjacent segments."
+        if cut
+        else (
+            f"Previous segment motion context: {previous_prompt or 'none'}. "
+            f"Next segment motion hint: {next_prompt or 'none'}."
+        )
+    )
     return (
         "You are optimizing a local prompt for LTX Director Prompt Relay. "
         f"Generate one {rating} video prompt for segment {index + 1} of {total}. "
-        "Use the image as evidence when present. Describe the visible subject, setting, action, expression, "
-        "camera movement, lighting, and how the moment continues through time. "
-        "Write in present tense with literal chronological motion. "
+        "Use provided images only as motion references, not as caption targets. "
+        "Infer pose, action, motion direction, expression changes, camera movement, temporal continuation, "
+        "and visible or implied sound cues. "
+        "Do not describe static image facts like setting, clothing, lighting, object appearance, composition, "
+        "or background unless the user explicitly asks or a tiny actor reference is required for clarity. "
+        "Write one concise present-tense LTX segment prompt with literal chronological motion. "
         "Do not output bullets, labels, quotes, markdown, negative prompts, or explanations. "
-        "Avoid repeating global context unless it is required for continuity. "
+        "Avoid repeated global context and static visual inventory. "
         f"User direction to preserve: {direction or 'none'}. "
-        f"Previous segment summary: {clean_prompt_text(previous_prompt) or 'none'}. "
-        f"Next segment hint: {clean_prompt_text(next_prompt) or 'none'}."
+        f"{continuity}"
     )
 
 
@@ -435,7 +476,7 @@ def _load_qwen_model(spec: OptimizerModelSpec, path: Path, status_cb: Any = None
 def _generate_qwen(
     spec: OptimizerModelSpec,
     path: Path,
-    image: Image.Image | None,
+    images: list[tuple[str, Image.Image]],
     instruction: str,
     status_cb: Any = None,
 ) -> str:
@@ -444,12 +485,14 @@ def _generate_qwen(
     processor = loaded["processor"]
     torch = loaded["torch"]
     content: list[dict[str, Any]] = []
-    if image is not None:
+    image_values = [image for _, image in images]
+    for label, image in images:
+        content.append({"type": "text", "text": f"{label} image:"})
         content.append({"type": "image", "image": image})
     content.append({"type": "text", "text": instruction})
     conversation = [{"role": "user", "content": content}]
     chat = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-    inputs = processor(text=[chat], images=[image] if image is not None else None, padding=True, return_tensors="pt")
+    inputs = processor(text=[chat], images=image_values or None, padding=True, return_tensors="pt")
     device = next(model.parameters()).device
     model_inputs = {key: value.to(device) if torch.is_tensor(value) else value for key, value in inputs.items()}
     outputs = model.generate(**model_inputs, max_new_tokens=180, do_sample=False, repetition_penalty=1.05)
@@ -501,6 +544,47 @@ def _generate_florence(
     return processor.batch_decode(outputs, skip_special_tokens=True)[0]
 
 
+def _neighbor_segment(segments: list[Any], index: int, offset: int) -> dict[str, Any] | None:
+    neighbor_index = index + offset
+    if 0 <= neighbor_index < len(segments) and isinstance(segments[neighbor_index], dict):
+        return segments[neighbor_index]
+    return None
+
+
+def _previous_context(
+    segments: list[Any],
+    index: int,
+    generated_by_id: dict[str, str],
+) -> str:
+    previous = _neighbor_segment(segments, index, -1)
+    if not previous:
+        return ""
+    previous_id = str(previous.get("id") or "")
+    return clean_prompt_text(generated_by_id.get(previous_id) or segment_direction_text(previous))
+
+
+def _next_context(segments: list[Any], index: int) -> str:
+    return segment_direction_text(_neighbor_segment(segments, index, 1))
+
+
+def _qwen_context_images(
+    segments: list[Any],
+    index: int,
+    include_neighbors: bool,
+) -> list[tuple[str, Image.Image]]:
+    offsets = [0] if not include_neighbors else [-1, 0, 1]
+    labels = {-1: "Previous", 0: "Current", 1: "Next"}
+    images: list[tuple[str, Image.Image]] = []
+    for offset in offsets:
+        segment = _neighbor_segment(segments, index, offset)
+        if not segment:
+            continue
+        image = decode_image(segment)
+        if image is not None:
+            images.append((labels[offset], image))
+    return images
+
+
 def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[str, Any]:
     status = status_cb or _noop_status
     status("Checking selected model...")
@@ -528,22 +612,23 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
         if not segment.get("selected", True):
             continue
         generated_count += 1
-        previous_prompt = generated_by_id.get(str(segments[index - 1].get("id")), "") if index > 0 and isinstance(segments[index - 1], dict) else ""
-        next_prompt = ""
-        if index + 1 < len(segments) and isinstance(segments[index + 1], dict):
-            next_prompt = clean_prompt_text(segments[index + 1].get("direction") or segments[index + 1].get("prompt"))
+        cut = segment_requests_cut(segment)
+        previous_prompt = "" if cut else _previous_context(segments, index, generated_by_id)
+        next_prompt = "" if cut else _next_context(segments, index)
         instruction = build_optimizer_instruction(segment, mode, index, total, previous_prompt, next_prompt)
 
         if spec.backend == "fallback":
             status(f"Generating fallback prompt {generated_count} of {selected_total}...", generated_count, selected_total)
-            optimized = fallback_optimize_segment(segment, mode, index, total)
+            optimized = fallback_optimize_segment(segment, mode, index, total, previous_prompt, next_prompt)
         else:
-            status(f"Preparing image {generated_count} of {selected_total}...", generated_count, selected_total)
-            image = decode_image(segment)
-            status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
+            status(f"Preparing image context {generated_count} of {selected_total}...", generated_count, selected_total)
             if spec.backend == "qwen":
-                optimized = _generate_qwen(spec, path, image, instruction, status)  # type: ignore[arg-type]
+                images = _qwen_context_images(segments, index, not cut)
+                status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
+                optimized = _generate_qwen(spec, path, images, instruction, status)  # type: ignore[arg-type]
             elif spec.backend == "florence":
+                image = decode_image(segment)
+                status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_florence(spec, path, image, instruction, status)  # type: ignore[arg-type]
             else:
                 raise PromptOptimizerError(f"Unsupported optimizer backend: {spec.backend}")
@@ -551,7 +636,7 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
             optimized = clean_prompt_text(optimized)
 
         if not optimized:
-            optimized = fallback_optimize_segment(segment, mode, index, total)
+            optimized = fallback_optimize_segment(segment, mode, index, total, previous_prompt, next_prompt)
         generated_by_id[seg_id] = optimized
         results.append({"id": seg_id, "prompt": optimized})
 

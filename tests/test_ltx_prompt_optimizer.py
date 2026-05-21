@@ -133,6 +133,38 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("SFW", sfw)
         self.assertIn("NSFW/unredacted", nsfw)
         self.assertIn("The woman smiles", sfw)
+        self.assertIn("motion references, not as caption targets", sfw)
+        self.assertIn("visible or implied sound cues", sfw)
+        self.assertIn("Do not describe static image facts", sfw)
+        self.assertNotIn("Describe the visible subject, setting", sfw)
+        self.assertNotIn("camera motion, lighting", sfw)
+
+    def test_prompt_template_includes_continuity_without_cut(self):
+        segment = {"id": "b", "prompt": "The woman smiles", "type": "image"}
+        text = optimizer.build_optimizer_instruction(
+            segment,
+            "sfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+        )
+        self.assertIn("Previous segment motion context: She turns toward the camera", text)
+        self.assertIn("Next segment motion hint: She starts laughing", text)
+
+    def test_prompt_template_omits_continuity_for_cut(self):
+        segment = {"id": "b", "prompt": "hard cut to the woman smiling", "type": "image"}
+        text = optimizer.build_optimizer_instruction(
+            segment,
+            "sfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+        )
+        self.assertIn("new cut", text)
+        self.assertNotIn("She turns toward the camera", text)
+        self.assertNotIn("She starts laughing", text)
 
     def test_fallback_optimize_uses_direction(self):
         text = optimizer.fallback_optimize_segment(
@@ -143,6 +175,32 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         )
         self.assertIn("The woman smiles", text)
         self.assertIn("Opening moment", text)
+        self.assertIn("visible or implied sound cues", text)
+        self.assertNotIn("lighting", text)
+
+    def test_fallback_optimize_uses_continuity_when_no_cut(self):
+        text = optimizer.fallback_optimize_segment(
+            {"id": "b", "direction": "The woman smiles", "type": "image"},
+            "sfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+        )
+        self.assertIn("Continue from: She turns toward the camera", text)
+        self.assertIn("Move toward: She starts laughing", text)
+
+    def test_fallback_optimize_omits_continuity_for_cut(self):
+        text = optimizer.fallback_optimize_segment(
+            {"id": "b", "direction": "new scene, the woman smiles", "type": "image"},
+            "sfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+        )
+        self.assertNotIn("Continue from", text)
+        self.assertNotIn("Move toward", text)
 
     def test_optimize_validates_selected_segments(self):
         with self.assertRaises(optimizer.PromptOptimizerError):
@@ -167,6 +225,87 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertTrue(any("Checking selected model" in message for message, _, _ in messages))
         self.assertTrue(any("Generating fallback prompt" in message for message, _, _ in messages))
         self.assertTrue(any("Done. Generated 1 prompt" in message for message, _, _ in messages))
+
+    def test_optimize_qwen_uses_generated_previous_and_next_hint(self):
+        calls = []
+
+        def fake_generate(_spec, _path, images, instruction, _status):
+            calls.append((images, instruction))
+            return f"generated-{len(calls)}"
+
+        def fake_decode(segment):
+            return f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "selected": True, "prompt": "She turns toward the camera", "type": "image"},
+            {"id": "b", "selected": True, "prompt": "She smiles wider", "type": "image"},
+            {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+            with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                    result = optimizer.optimize_segments(
+                        {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
+                    )
+
+        self.assertEqual([item["prompt"] for item in result["results"]], ["generated-1", "generated-2"])
+        self.assertEqual([label for label, _ in calls[1][0]], ["Previous", "Current", "Next"])
+        self.assertEqual([image for _, image in calls[1][0]], ["image-a", "image-b", "image-c"])
+        self.assertIn("Previous segment motion context: generated-1", calls[1][1])
+        self.assertIn("Next segment motion hint: She starts laughing", calls[1][1])
+
+    def test_optimize_qwen_cut_uses_current_image_only(self):
+        calls = []
+
+        def fake_generate(_spec, _path, images, instruction, _status):
+            calls.append((images, instruction))
+            return "generated"
+
+        def fake_decode(segment):
+            return f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "selected": False, "prompt": "She turns toward the camera", "type": "image"},
+            {"id": "b", "selected": True, "prompt": "cut scene, she smiles wider", "type": "image"},
+            {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+            with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                    optimizer.optimize_segments({"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments})
+
+        self.assertEqual([label for label, _ in calls[0][0]], ["Current"])
+        self.assertEqual([image for _, image in calls[0][0]], ["image-b"])
+        self.assertIn("new cut", calls[0][1])
+        self.assertNotIn("She turns toward the camera", calls[0][1])
+        self.assertNotIn("She starts laughing", calls[0][1])
+
+    def test_optimize_florence_uses_current_image_only_with_text_context(self):
+        calls = []
+
+        def fake_generate(_spec, _path, image, instruction, _status):
+            calls.append((image, instruction))
+            return "florence generated"
+
+        def fake_decode(segment):
+            return f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "selected": False, "prompt": "She turns toward the camera", "type": "image"},
+            {"id": "b", "selected": True, "prompt": "She smiles wider", "type": "image"},
+            {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
+            with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
+                    result = optimizer.optimize_segments(
+                        {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                    )
+
+        self.assertEqual(result["results"][0]["prompt"], "florence generated")
+        self.assertEqual(calls[0][0], "image-b")
+        self.assertIn("Previous segment motion context: She turns toward the camera", calls[0][1])
+        self.assertIn("Next segment motion hint: She starts laughing", calls[0][1])
 
     def test_optimizer_job_completes(self):
         job_id = optimizer.start_optimizer_job(
