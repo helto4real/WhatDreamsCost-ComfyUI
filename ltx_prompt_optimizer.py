@@ -37,6 +37,7 @@ FLORENCE_DEPS = ("transformers", "huggingface_hub", "accelerate", "torchvision")
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 SETTINGS_FILE = CONFIG_DIR / "ltx_prompt_optimizer_settings.json"
 TIMING_FILE = CONFIG_DIR / "ltx_prompt_optimizer_timing.json"
+OPTIMIZER_IMAGE_MAX_SIDE = 768
 
 
 @dataclass(frozen=True)
@@ -482,9 +483,20 @@ def _download_error(spec: OptimizerModelSpec, exc: Exception) -> PromptOptimizer
     return PromptOptimizerError(f"Could not download '{spec.repo_id}': {raw}")
 
 
+def normalize_optimizer_image(image: Image.Image, max_side: int = OPTIMIZER_IMAGE_MAX_SIDE) -> Image.Image:
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    width, height = image.size
+    largest = max(width, height)
+    if largest <= max_side:
+        return image.copy()
+    scale = max_side / float(largest)
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
 def _load_rgb_image(path: Path) -> Image.Image:
     with Image.open(Path(path)) as image:
-        return ImageOps.exif_transpose(image).convert("RGB")
+        return normalize_optimizer_image(image)
 
 
 def decode_image(segment: dict[str, Any]) -> Image.Image | None:
@@ -492,7 +504,8 @@ def decode_image(segment: dict[str, Any]) -> Image.Image | None:
     if image_data.startswith("data:image/"):
         try:
             _, encoded = image_data.split(",", 1)
-            return Image.open(io.BytesIO(base64.b64decode(encoded))).convert("RGB")
+            with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+                return normalize_optimizer_image(image)
         except Exception as exc:  # noqa: BLE001
             raise PromptOptimizerError(f"Could not decode image data for segment '{segment.get('id', '')}': {exc}") from exc
 

@@ -15,6 +15,12 @@ import ltx_prompt_optimizer as optimizer
 
 
 class LTXPromptOptimizerTests(unittest.TestCase):
+    def _data_url_image(self, width, height, color=(255, 0, 0)):
+        image = Image.new("RGB", (width, height), color)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
     def test_resolve_model_known_alias(self):
         spec = optimizer.resolve_model("qwen3_vl_4b_fast")
         self.assertEqual(spec.repo_id, "Qwen/Qwen3-VL-4B-Instruct")
@@ -222,6 +228,27 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertEqual(decoded.size, (8, 6))
         self.assertEqual(decoded.mode, "RGB")
 
+    def test_decode_large_data_url_image_downscales_to_optimizer_max_side(self):
+        image = Image.new("RGB", (2048, 1024), (255, 0, 0))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        data_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        decoded = optimizer.decode_image({"image_data": data_url})
+
+        self.assertEqual(decoded.size, (optimizer.OPTIMIZER_IMAGE_MAX_SIDE, optimizer.OPTIMIZER_IMAGE_MAX_SIDE // 2))
+        self.assertEqual(decoded.mode, "RGB")
+
+    def test_normalize_optimizer_image_preserves_small_image_size(self):
+        image = Image.new("RGB", (640, 480), (255, 0, 0))
+        normalized = optimizer.normalize_optimizer_image(image)
+        self.assertEqual(normalized.size, (640, 480))
+
+    def test_normalize_optimizer_image_preserves_aspect_ratio(self):
+        image = Image.new("RGB", (3000, 1000), (255, 0, 0))
+        normalized = optimizer.normalize_optimizer_image(image)
+        self.assertEqual(normalized.size, (optimizer.OPTIMIZER_IMAGE_MAX_SIDE, 256))
+
     def test_decode_folder_image_reference(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/sample.png"
@@ -229,6 +256,14 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             with mock.patch.object(optimizer, "resolve_image_path", return_value=path):
                 decoded = optimizer.decode_image({"imageFolderAlias": "input", "imageFile": "sample.png"})
         self.assertEqual(decoded.size, (5, 4))
+
+    def test_decode_large_folder_image_reference_downscales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/sample.png"
+            Image.new("RGB", (1024, 2048), (0, 255, 0)).save(path)
+            with mock.patch.object(optimizer, "resolve_image_path", return_value=path):
+                decoded = optimizer.decode_image({"imageFolderAlias": "input", "imageFile": "sample.png"})
+        self.assertEqual(decoded.size, (optimizer.OPTIMIZER_IMAGE_MAX_SIDE // 2, optimizer.OPTIMIZER_IMAGE_MAX_SIDE))
 
     def test_prompt_template_differs_by_mode(self):
         segment = {"id": "a", "prompt": "The woman smiles", "type": "image"}
@@ -359,6 +394,18 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertEqual([image for _, image in calls[1][0]], ["image-a", "image-b", "image-c"])
         self.assertIn("Previous segment motion context: generated-1", calls[1][1])
         self.assertIn("Next segment motion hint: She starts laughing", calls[1][1])
+
+    def test_qwen_context_images_are_downscaled(self):
+        segments = [
+            {"id": "a", "selected": False, "image_data": self._data_url_image(2048, 1024)},
+            {"id": "b", "selected": True, "image_data": self._data_url_image(1024, 2048)},
+            {"id": "c", "selected": False, "image_data": self._data_url_image(3000, 1000)},
+        ]
+
+        images = optimizer._qwen_context_images(segments, 1, True)
+
+        self.assertEqual([label for label, _ in images], ["Previous", "Current", "Next"])
+        self.assertEqual([image.size for _, image in images], [(768, 384), (384, 768), (768, 256)])
 
     def test_optimize_qwen_cut_uses_current_image_only(self):
         calls = []
