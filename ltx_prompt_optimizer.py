@@ -38,6 +38,20 @@ CONFIG_DIR = Path(__file__).resolve().parent / "config"
 SETTINGS_FILE = CONFIG_DIR / "ltx_prompt_optimizer_settings.json"
 TIMING_FILE = CONFIG_DIR / "ltx_prompt_optimizer_timing.json"
 OPTIMIZER_IMAGE_MAX_SIDE = 768
+DEFAULT_OPTIMIZER_PROMPT_TEMPLATE = (
+    "You are optimizing a local prompt for LTX Director Prompt Relay. "
+    "Generate one {rating} video prompt for segment {segment_index} of {segment_total}. "
+    "Use provided images only as motion references, not as caption targets. "
+    "Infer pose, action, motion direction, expression changes, camera movement, temporal continuation, "
+    "and visible or implied sound cues. "
+    "Do not describe static image facts like setting, clothing, lighting, object appearance, composition, "
+    "or background unless the user explicitly asks or a tiny actor reference is required for clarity. "
+    "Write one concise present-tense LTX segment prompt with literal chronological motion. "
+    "Do not output bullets, labels, quotes, markdown, negative prompts, or explanations. "
+    "Avoid repeated global context and static visual inventory. "
+    "User direction to preserve: {direction}. "
+    "{continuity}"
+)
 
 
 @dataclass(frozen=True)
@@ -168,30 +182,68 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
 def load_optimizer_settings(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     path = settings_path(base_dir)
     if not path.exists():
-        return {"version": 1, "hf_token": ""}
+        return {"version": 1, "hf_token": "", "prompt_template": ""}
     try:
         payload = json.loads(path.read_text(encoding="utf-8") or "{}")
     except Exception:
-        return {"version": 1, "hf_token": ""}
+        return {"version": 1, "hf_token": "", "prompt_template": ""}
     return {
         "version": 1,
         "hf_token": str(payload.get("hf_token") or ""),
+        "prompt_template": str(payload.get("prompt_template") or ""),
     }
+
+
+def _save_optimizer_settings(settings: dict[str, Any], base_dir: str | os.PathLike[str] | None = None) -> None:
+    payload = {
+        "version": 1,
+        "hf_token": str(settings.get("hf_token") or ""),
+        "prompt_template": str(settings.get("prompt_template") or ""),
+    }
+    if not payload["hf_token"] and not payload["prompt_template"]:
+        settings_path(base_dir).unlink(missing_ok=True)
+        return
+    _write_private_json(settings_path(base_dir), payload)
 
 
 def save_hf_token(token: str, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     token = str(token or "").strip()
-    path = settings_path(base_dir)
+    settings = load_optimizer_settings(base_dir)
+    settings["hf_token"] = token
     if not token:
         clear_hf_token(base_dir)
         return get_optimizer_settings_status(base_dir)
-    _write_private_json(path, {"version": 1, "hf_token": token})
+    _save_optimizer_settings(settings, base_dir)
     return get_optimizer_settings_status(base_dir)
 
 
 def clear_hf_token(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
-    path = settings_path(base_dir)
-    path.unlink(missing_ok=True)
+    settings = load_optimizer_settings(base_dir)
+    settings["hf_token"] = ""
+    _save_optimizer_settings(settings, base_dir)
+    return get_optimizer_settings_status(base_dir)
+
+
+def configured_prompt_template(base_dir: str | os.PathLike[str] | None = None) -> str:
+    return str(load_optimizer_settings(base_dir).get("prompt_template") or "").strip()
+
+
+def active_prompt_template(base_dir: str | os.PathLike[str] | None = None) -> str:
+    return configured_prompt_template(base_dir) or DEFAULT_OPTIMIZER_PROMPT_TEMPLATE
+
+
+def save_prompt_template(template: str, base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    template = str(template or "").strip()
+    settings = load_optimizer_settings(base_dir)
+    settings["prompt_template"] = template
+    _save_optimizer_settings(settings, base_dir)
+    return get_optimizer_settings_status(base_dir)
+
+
+def reset_prompt_template(base_dir: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    settings = load_optimizer_settings(base_dir)
+    settings["prompt_template"] = ""
+    _save_optimizer_settings(settings, base_dir)
     return get_optimizer_settings_status(base_dir)
 
 
@@ -222,6 +274,9 @@ def get_optimizer_settings_status(base_dir: str | os.PathLike[str] | None = None
         "tokenConfigured": configured,
         "envTokenAvailable": env_available,
         "authSource": auth_source,
+        "promptTemplate": active_prompt_template(base_dir),
+        "defaultPromptTemplate": DEFAULT_OPTIMIZER_PROMPT_TEMPLATE,
+        "promptTemplateConfigured": bool(configured_prompt_template(base_dir)),
     }
 
 
@@ -596,6 +651,7 @@ def build_optimizer_instruction(
     total: int,
     previous_prompt: str = "",
     next_prompt: str = "",
+    template: str | None = None,
 ) -> str:
     direction = clean_prompt_text(segment.get("direction") or segment.get("prompt"))
     rating = "NSFW/unredacted" if mode == "nsfw" else "SFW"
@@ -610,20 +666,21 @@ def build_optimizer_instruction(
             f"Next segment motion hint: {next_prompt or 'none'}."
         )
     )
-    return (
-        "You are optimizing a local prompt for LTX Director Prompt Relay. "
-        f"Generate one {rating} video prompt for segment {index + 1} of {total}. "
-        "Use provided images only as motion references, not as caption targets. "
-        "Infer pose, action, motion direction, expression changes, camera movement, temporal continuation, "
-        "and visible or implied sound cues. "
-        "Do not describe static image facts like setting, clothing, lighting, object appearance, composition, "
-        "or background unless the user explicitly asks or a tiny actor reference is required for clarity. "
-        "Write one concise present-tense LTX segment prompt with literal chronological motion. "
-        "Do not output bullets, labels, quotes, markdown, negative prompts, or explanations. "
-        "Avoid repeated global context and static visual inventory. "
-        f"User direction to preserve: {direction or 'none'}. "
-        f"{continuity}"
-    )
+    values = {
+        "mode": mode,
+        "rating": rating,
+        "segment_index": index + 1,
+        "segment_total": total,
+        "direction": direction or "none",
+        "continuity": continuity,
+        "previous_prompt": previous_prompt or "none",
+        "next_prompt": next_prompt or "none",
+        "cut_instruction": "new cut" if cut else "continue naturally",
+    }
+    try:
+        return (template or active_prompt_template()).format_map(values)
+    except (KeyError, ValueError) as exc:
+        raise PromptOptimizerError(f"Could not format prompt optimizer template: {exc}") from exc
 
 
 def _load_qwen_model(spec: OptimizerModelSpec, path: Path, status_cb: Any = None) -> dict[str, Any]:
@@ -793,6 +850,7 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
     generated_count = 0
     results = []
     generated_by_id: dict[str, str] = {}
+    prompt_template = active_prompt_template()
 
     for index, segment in enumerate(segments):
         seg_id = str(segment.get("id") or "")
@@ -802,7 +860,7 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
         cut = segment_requests_cut(segment)
         previous_prompt = "" if cut else _previous_context(segments, index, generated_by_id)
         next_prompt = "" if cut else _next_context(segments, index)
-        instruction = build_optimizer_instruction(segment, mode, index, total, previous_prompt, next_prompt)
+        instruction = build_optimizer_instruction(segment, mode, index, total, previous_prompt, next_prompt, prompt_template)
 
         if spec.backend == "fallback":
             status(f"Generating fallback prompt {generated_count} of {selected_total}...", generated_count, selected_total)

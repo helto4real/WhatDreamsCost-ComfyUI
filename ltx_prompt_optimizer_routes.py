@@ -13,7 +13,9 @@ try:
         get_optimizer_job_status,
         get_optimizer_settings_status,
         optimize_segments,
+        reset_prompt_template,
         save_hf_token,
+        save_prompt_template,
         start_optimizer_job,
         unload_optimizer_model,
     )
@@ -53,6 +55,10 @@ if web is not None and server is not None:
     async def post_prompt_optimizer_settings(request):
         try:
             payload = await request.json()
+            if payload.get("reset_prompt_template"):
+                return web.json_response(reset_prompt_template())
+            if "prompt_template" in payload:
+                return web.json_response(save_prompt_template(payload.get("prompt_template", "")))
             if payload.get("clear"):
                 return web.json_response(clear_hf_token())
             return web.json_response(save_hf_token(payload.get("hf_token", "")))

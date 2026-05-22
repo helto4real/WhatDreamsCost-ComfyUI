@@ -1079,11 +1079,12 @@ const STYLES = `
   }
   .pr-prompt-optimizer-controls {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) 150px auto;
+    grid-template-columns: minmax(180px, 1fr) 150px auto auto;
     gap: 8px;
     align-items: center;
     margin-bottom: 8px;
   }
+  .pr-prompt-optimizer-controls button,
   .pr-prompt-optimizer-controls select {
     background: #151515;
     color: #ddd;
@@ -1091,6 +1092,12 @@ const STYLES = `
     border-radius: 4px;
     padding: 6px;
     min-width: 0;
+  }
+  .pr-prompt-optimizer-controls button {
+    cursor: pointer;
+  }
+  .pr-prompt-optimizer-controls button:hover {
+    background: #333;
   }
   .pr-prompt-auth-row {
     display: grid;
@@ -1125,6 +1132,54 @@ const STYLES = `
     cursor: pointer;
   }
   .pr-prompt-auth-row button:hover {
+    background: #444;
+  }
+  .pr-prompt-template-editor {
+    display: none;
+    margin-bottom: 8px;
+    background: #181818;
+    border: 1px solid #333;
+    border-radius: 5px;
+    padding: 8px;
+  }
+  .pr-prompt-template-editor.is-open {
+    display: block;
+  }
+  .pr-prompt-template-editor textarea {
+    width: 100%;
+    height: 150px;
+    min-height: 110px;
+    resize: vertical;
+    box-sizing: border-box;
+    background: #151515;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 7px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .pr-prompt-template-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 7px;
+  }
+  .pr-prompt-template-toolbar span {
+    flex: 1;
+    min-width: 0;
+    color: #aaa;
+    font-size: 11px;
+  }
+  .pr-prompt-template-toolbar button {
+    background: #333;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .pr-prompt-template-toolbar button:hover {
     background: #444;
   }
   .pr-prompt-mode {
@@ -2789,6 +2844,7 @@ class TimelineEditor {
             <button class="mode active" type="button" data-mode="sfw">SFW</button>
             <button class="mode" type="button" data-mode="nsfw">NSFW</button>
           </div>
+          <button class="edit-template" type="button">Prompt</button>
           <button class="generate" type="button">Generate</button>
         </div>
         <div class="pr-prompt-auth-row">
@@ -2796,6 +2852,14 @@ class TimelineEditor {
           <input class="hf-token" type="password" autocomplete="off" placeholder="hf_... access token">
           <button class="save-token" type="button">Save</button>
           <button class="clear-token" type="button">Clear</button>
+        </div>
+        <div class="pr-prompt-template-editor">
+          <textarea class="prompt-template" spellcheck="false"></textarea>
+          <div class="pr-prompt-template-toolbar">
+            <span class="prompt-template-status">Default prompt template.</span>
+            <button class="save-template" type="button">Save Prompt</button>
+            <button class="reset-template" type="button">Reset Default</button>
+          </div>
         </div>
         <div class="pr-prompt-optimizer-status"></div>
         <div class="pr-prompt-progress" aria-hidden="true">
@@ -2821,6 +2885,12 @@ class TimelineEditor {
     const hfTokenInput = overlay.querySelector(".hf-token");
     const saveTokenBtn = overlay.querySelector(".save-token");
     const clearTokenBtn = overlay.querySelector(".clear-token");
+    const editTemplateBtn = overlay.querySelector(".edit-template");
+    const promptTemplateEditor = overlay.querySelector(".pr-prompt-template-editor");
+    const promptTemplateInput = overlay.querySelector(".prompt-template");
+    const promptTemplateStatus = overlay.querySelector(".prompt-template-status");
+    const saveTemplateBtn = overlay.querySelector(".save-template");
+    const resetTemplateBtn = overlay.querySelector(".reset-template");
     const grid = overlay.querySelector(".pr-prompt-optimizer-grid");
     const generateBtn = overlay.querySelector(".generate");
     const replaceBtn = overlay.querySelector(".replace");
@@ -2886,6 +2956,10 @@ class TimelineEditor {
       hfTokenInput.disabled = busy || this.privacyLocked;
       saveTokenBtn.disabled = busy || this.privacyLocked;
       clearTokenBtn.disabled = busy || this.privacyLocked;
+      editTemplateBtn.disabled = busy || this.privacyLocked;
+      promptTemplateInput.disabled = busy || this.privacyLocked;
+      saveTemplateBtn.disabled = busy || this.privacyLocked;
+      resetTemplateBtn.disabled = busy || this.privacyLocked;
       for (const button of modeButtons) button.disabled = busy || this.privacyLocked;
       for (const state of rowState.values()) {
         if (state.decreaseHeight) state.decreaseHeight.disabled = busy || this.privacyLocked || state.textHeight <= rowTextMinHeight;
@@ -3121,9 +3195,18 @@ class TimelineEditor {
     });
 
     const refreshOptimizerStatus = async () => {
-      await this.loadPromptOptimizerSettings(authStatusEl, hfTokenInput);
+      const settings = await this.loadPromptOptimizerSettings(authStatusEl, hfTokenInput);
+      promptTemplateInput.value = settings.promptTemplate || settings.defaultPromptTemplate || "";
+      promptTemplateInput.dataset.defaultTemplate = settings.defaultPromptTemplate || "";
+      promptTemplateStatus.textContent = settings.promptTemplateConfigured
+        ? "Custom prompt template saved locally."
+        : "Using the default motion-only prompt template.";
       await this.loadPromptOptimizerModels(modelSelect, statusEl);
     };
+
+    editTemplateBtn.addEventListener("click", () => {
+      promptTemplateEditor.classList.toggle("is-open");
+    });
 
     saveTokenBtn.addEventListener("click", async () => {
       if (this.privacyLocked) return;
@@ -3159,13 +3242,47 @@ class TimelineEditor {
       }
     });
 
+    saveTemplateBtn.addEventListener("click", async () => {
+      if (this.privacyLocked) return;
+      setBusy(true);
+      try {
+        await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt_template: promptTemplateInput.value || "" }),
+        });
+        await refreshOptimizerStatus();
+      } catch (err) {
+        promptTemplateStatus.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    resetTemplateBtn.addEventListener("click", async () => {
+      if (this.privacyLocked) return;
+      setBusy(true);
+      try {
+        await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset_prompt_template: true }),
+        });
+        await refreshOptimizerStatus();
+      } catch (err) {
+        promptTemplateStatus.textContent = err.message;
+      } finally {
+        setBusy(false);
+      }
+    });
+
     cancelBtn.addEventListener("click", () => {
       this.closePromptOptimizer();
     });
     for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
       panel.addEventListener(eventName, (event) => event.stopPropagation());
     }
-    for (const input of [hfTokenInput, saveTokenBtn, clearTokenBtn, modelSelect]) {
+    for (const input of [hfTokenInput, saveTokenBtn, clearTokenBtn, editTemplateBtn, promptTemplateInput, saveTemplateBtn, resetTemplateBtn, modelSelect]) {
       for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
         input.addEventListener(eventName, (event) => event.stopPropagation());
       }

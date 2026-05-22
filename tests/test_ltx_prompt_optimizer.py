@@ -145,6 +145,26 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             self.assertFalse(cleared["tokenConfigured"])
             self.assertEqual(optimizer.configured_hf_token(tmp), "")
 
+    def test_save_prompt_template_and_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            custom = "Custom {rating} prompt for {direction}. {continuity}"
+            saved = optimizer.save_prompt_template(custom, tmp)
+            self.assertTrue(saved["promptTemplateConfigured"])
+            self.assertEqual(saved["promptTemplate"], custom)
+
+            reset = optimizer.reset_prompt_template(tmp)
+            self.assertFalse(reset["promptTemplateConfigured"])
+            self.assertEqual(reset["promptTemplate"], optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE)
+
+    def test_clearing_hf_token_preserves_prompt_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            optimizer.save_hf_token("hf_test_token", tmp)
+            optimizer.save_prompt_template("Custom {direction}", tmp)
+            cleared = optimizer.clear_hf_token(tmp)
+            self.assertFalse(cleared["tokenConfigured"])
+            self.assertTrue(cleared["promptTemplateConfigured"])
+            self.assertEqual(cleared["promptTemplate"], "Custom {direction}")
+
     def test_env_hf_token_fallback(self):
         with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_env_token"}, clear=True):
             with mock.patch.object(optimizer, "configured_hf_token", return_value=""):
@@ -304,6 +324,23 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("new cut", text)
         self.assertNotIn("She turns toward the camera", text)
         self.assertNotIn("She starts laughing", text)
+
+    def test_custom_prompt_template_formats_context(self):
+        segment = {"id": "b", "prompt": "The woman smiles", "type": "image"}
+        text = optimizer.build_optimizer_instruction(
+            segment,
+            "nsfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+            "Make {rating} segment {segment_index}/{segment_total}: {direction}. Prev={previous_prompt}. Next={next_prompt}. {continuity}",
+        )
+        self.assertIn("NSFW/unredacted", text)
+        self.assertIn("segment 2/3", text)
+        self.assertIn("The woman smiles", text)
+        self.assertIn("Prev=She turns toward the camera", text)
+        self.assertIn("Next=She starts laughing", text)
 
     def test_fallback_optimize_uses_direction(self):
         text = optimizer.fallback_optimize_segment(

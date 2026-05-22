@@ -173,6 +173,7 @@ The Prompt Optimizer is opened from the icon in the LTX Director toolbar. It sho
 - the current prompt/direction text
 - the generated optimized LTX prompt
 - row height controls so both text boxes resize together
+- a Prompt button for editing or resetting the optimizer instruction template
 
 ![LTX Prompt Optimizer window map](assets/readme/ltx-prompt-optimizer-window.png)
 
@@ -218,7 +219,7 @@ Models are downloaded into your ComfyUI models folder when needed:
 - Qwen/Qwen2.5 models go under `models/VLM`
 - Florence goes under `models/LLM`
 
-If a model is gated/private, add a Hugging Face access token inside the optimizer window. The token is stored locally in:
+If a model is gated/private, add a Hugging Face access token inside the optimizer window. The token and optional custom optimizer prompt template are stored locally in:
 
 ```text
 config/ltx_prompt_optimizer_settings.json
