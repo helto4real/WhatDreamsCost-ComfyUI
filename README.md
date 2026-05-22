@@ -11,15 +11,15 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 <table>
   <tr>
     <td>
-      <p align="center">Overview Video</p>
-      <a href="https://www.youtube.com/watch?v=aXDIr8eNovI">
-        <img src="https://img.youtube.com/vi/aXDIr8eNovI/0.jpg" alt="Overview Video" width="400">
+      <p align="center">LTX Director Trailer</p>
+      <a href="https://www.youtube.com/watch?v=fZgtkRcu4_k">
+        <img src="https://img.youtube.com/vi/fZgtkRcu4_k/0.jpg" alt="LTX Director Trailer" width="400">
       </a>
     </td>
     <td>
-      <p align="center">Prompting and Keyframing Guide</p>
-      <a href="https://www.youtube.com/watch?v=ZY4hsvTzbas">
-        <img src="https://img.youtube.com/vi/ZY4hsvTzbas/0.jpg" alt="Prompting and Keyframing Guide" width="400">
+      <p align="center">LTX Director Tutorial</p>
+      <a href="https://www.youtube.com/watch?v=vM60pJJqqEI">
+        <img src="https://img.youtube.com/vi/vM60pJJqqEI/0.jpg" alt="LTX Director Tutorial" width="400">
       </a>
     </td>
   </tr>
@@ -31,8 +31,36 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 - Run `git clone https://github.com/WhatDreamscost/WhatDreamsCost-ComfyUI`
 - Or download through the ComfyUI Manager.
 
-# 🔄 Recent Updates
+**❗❗IMPORTANT❗❗**
 
+If you don't see the latest version (v1.3.9) yet in the manager then just downloaded the nightly version (or fetch the updates to update the list to see the latest version). 
+Also you will need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to the latest version as well. You cannot use this node without updating ComfyUI-LTXVideo!
+
+# 🔄 Recent Updates
+**v1.3.9**
+  * **Fixed recent updates not showing in the manager**
+
+It took like 5 tries but I finally got it working 🤦‍♂️
+
+**v1.3.3**
+  * **LTX Director Hotfix 2**
+    - Fixed duration_seconds input issue.
+    - Made both duration widgets visible at all times now
+    - Implemented audio latent fix to improve compatibility
+
+
+**v1.3.2**
+  * **LTX Director Hotfix**
+    - Fixed epsilon input overlapping custom_width input
+    - Fixed invisible widgets in nodes 2.0 when toggling widget visibility through settings menu
+
+If anyone finds anymore bugs or has idea for improvements please let me know! 
+
+
+**v1.3.1**
+  * **LTX Director Example Workflow Fix**
+    - Minor fix to the example workflow (i forgot to set the clip loader type to ltxv lol)
+    
  **v1.3.0**
   * **New nodes: LTX Director and LTX Director Guide**
     - A complete timeline editor that can do almost everything. It's my most ambitious node so far and the successor to LTX Sequencer/Multi Image Loader.
@@ -115,9 +143,11 @@ A Complete Timeline Editor For LTX 2.3. This is the sucessor of my previous node
 - **First, Middle, Last Frame Support:** This has by far the easiest method of creating first/last frames videos. It supports any number of keyframes, and will be the successor of my previous nodes.
 - **Custom Audio Support:** Import, trim, and combine your own audio clips in this node. Enabling custom audio is as simple as clicking 1 button. It is also compatible with every other feature in the node, include first/last frames, t2v, i2v, and prompt relay.
 - **Image to Video:** Part of the goal of this node was to make it easier to do everything, including Image to Video. It has built in resize functionality, and of course all the benifits of the prompt relay and custom audio integration.
-- **Text to Video:** Simply load any images and use text segments to create T2V videos. Compatible with all other features of the node.
+- **Text to Video:** Use text segments to create T2V videos. Compatible with all other features of the node.
 
 Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
+
+**Tutorial videos and documentation coming soon**
 
 
 ## Multi Image Loader
@@ -207,6 +237,6 @@ Fixed everything so far. If there are any other issue or bugs you find please le
 
 # 💡 Additional Info
 
-I made these nodes knowing almost nothing about python and a beginner level knowledge of javascript. Feel free to suggest improvements, and if you run into any bugs let me know.
+I made these nodes knowing little about python and a beginner level understanding of javascript. Feel free to suggest improvements, and if you run into any bugs let me know.
 
 For those asking, I mainly used gemini to create these nodes.

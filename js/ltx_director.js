@@ -15,10 +15,12 @@ const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths"
 function hideWidget(w) {
   if (!w) return;
   if (!w._origType && w.type !== "hidden") w._origType = w.type;
-  w.type = "hidden";
+  // We don't set w.type = "hidden" anymore because it causes rendering issues in Nodes 2.0.
+  // Instead we use the computeSize = () => [0,0] trick which works in both V1 and V2.
   w.hidden = true;
   if (!w.options) w.options = {};
   w.options.hidden = true;
+  w.computeSize = () => [0, 0];
   if (w.element) w.element.style.display = "none";
 }
 
@@ -702,7 +704,7 @@ class TimelineEditor {
     }
 
     // Polling is much more reliable in Comfy than ResizeObserver due to scale transforms
-    this._renderLoop = requestAnimationFrame(this.checkResize.bind(this));
+    this._renderLoop = requestAnimationFrame(() => this.checkResize());
   }
 
   destroy() {
@@ -1012,8 +1014,8 @@ class TimelineEditor {
 
     this.viewport.appendChild(this.canvas);
 
-    this.canvas.addEventListener("mousedown", this.onMouseDown.bind(this));
-    this.canvas.addEventListener("contextmenu", this.onContextMenu.bind(this));
+    this.canvas.addEventListener("mousedown", (e) => this.onMouseDown(e));
+    this.canvas.addEventListener("contextmenu", (e) => this.onContextMenu(e));
     this.canvas.style.height = `${CANVAS_HEIGHT}px`;
 
     // --- Content Area Container ---
@@ -1137,8 +1139,8 @@ class TimelineEditor {
       }
     });
 
-    window.addEventListener("mousemove", this.onMouseMove.bind(this));
-    window.addEventListener("mouseup", this.onMouseUp.bind(this));
+    window.addEventListener("mousemove", (e) => this.onMouseMove(e));
+    window.addEventListener("mouseup", (e) => this.onMouseUp(e));
 
     // --- Player Controls ---
     const playerControls = document.createElement("div");
@@ -1368,7 +1370,7 @@ class TimelineEditor {
       this.canvas.style.width = newCanvasWidth + "px";
       this.resizeCanvas(newCanvasWidth);
     }
-    this._renderLoop = requestAnimationFrame(this.checkResize.bind(this));
+    this._renderLoop = requestAnimationFrame(() => this.checkResize());
   }
 
   getRenderScale() {
@@ -1640,30 +1642,20 @@ class TimelineEditor {
     const mode = this.displayModeWidget ? this.displayModeWidget.value : "seconds";
 
     if (this.durationFramesWidget) {
-      const isVisible = mode === "frames";
-      this.durationFramesWidget.type = isVisible ? "INT" : "hidden";
+      // Always visible regardless of display mode
+      this.durationFramesWidget.type = "INT";
       if (!this.durationFramesWidget.options) this.durationFramesWidget.options = {};
-      this.durationFramesWidget.options.hidden = !isVisible;
-      this.durationFramesWidget.hidden = !isVisible;
-
-      if (isVisible) {
-        delete this.durationFramesWidget.computeSize;
-      } else {
-        this.durationFramesWidget.computeSize = () => [0, 0];
-      }
+      this.durationFramesWidget.options.hidden = false;
+      this.durationFramesWidget.hidden = false;
+      delete this.durationFramesWidget.computeSize;
     }
     if (this.durationSecondsWidget) {
-      const isVisible = mode === "seconds";
-      this.durationSecondsWidget.type = isVisible ? "FLOAT" : "hidden";
+      // Always visible regardless of display mode
+      this.durationSecondsWidget.type = "FLOAT";
       if (!this.durationSecondsWidget.options) this.durationSecondsWidget.options = {};
-      this.durationSecondsWidget.options.hidden = !isVisible;
-      this.durationSecondsWidget.hidden = !isVisible;
-
-      if (isVisible) {
-        delete this.durationSecondsWidget.computeSize;
-      } else {
-        this.durationSecondsWidget.computeSize = () => [0, 0];
-      }
+      this.durationSecondsWidget.options.hidden = false;
+      this.durationSecondsWidget.hidden = false;
+      delete this.durationSecondsWidget.computeSize;
     }
 
     // Force node resize and redraw deferred to next tick
@@ -1881,7 +1873,7 @@ class TimelineEditor {
           this.ctx.clip();
 
           // Translucent background
-          this.ctx.fillStyle = "rgba(0, 0, 0, 0.70)";
+          this.ctx.fillStyle = "rgba(0, 0, 0, 0.60)";
           this.ctx.fillRect(startX, overlayY, pxWidth, overlayH);
 
           // Text
@@ -3225,6 +3217,18 @@ class TimelineEditor {
     for (const name of this._settingsWidgetNames) {
       const w = this.node.widgets?.find(w => w.name === name);
       if (w) hideWidget(w);
+
+      // Also remove corresponding input slot if it exists and is NOT connected
+      // to prevent overlapping issues in classic ComfyUI (nodes v1)
+      if (this.node.inputs) {
+        const inputIdx = this.node.inputs.findIndex(i => i.name === name);
+        if (inputIdx !== -1) {
+          const input = this.node.inputs[inputIdx];
+          if (input.link == null) {
+            this.node.removeInput(inputIdx);
+          }
+        }
+      }
     }
     this.updateWidgetVisibility();
 
@@ -3246,15 +3250,16 @@ class TimelineEditor {
     for (const name of this._settingsWidgetNames) {
       const w = this.node.widgets?.find(w => w.name === name);
       if (!w) continue;
-      // Restore original type from widget's origType if available, otherwise guess.
+      
       const typeMap = {
-        display_mode: "combo", epsilon: "number", divisible_by: "number",
-        img_compression: "number",
+        display_mode: "combo", epsilon: "FLOAT", divisible_by: "INT",
+        img_compression: "INT",
       };
-      w.type = typeMap[name] || "number";
+      w.type = typeMap[name] || w._origType || "number";
       w.hidden = false;
       if (w.options) w.options.hidden = false;
-      w.computeSize = null;
+      delete w.computeSize;
+      if (w.element) w.element.style.display = "";
     }
     this.updateWidgetVisibility();
 
@@ -3698,14 +3703,14 @@ class TimelineEditor {
 
         if (playDurationSec <= 0) continue;
 
-        const source = this.audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(this.audioContext.destination);
+        const bufferNode = this.audioContext.createBufferSource();
+        bufferNode.buffer = audioBuffer;
+        bufferNode["connect"](this.audioContext.destination);
 
         const startTime = this.audioContext.currentTime + waitTimeSec;
-        source.start(startTime, fileOffsetSec, playDurationSec);
+        bufferNode.start(startTime, fileOffsetSec, playDurationSec);
 
-        this.activeAudioNodes.push(source);
+        this.activeAudioNodes.push(bufferNode);
       } catch (err) {
         console.error("Playback decode error for segment:", err);
       }
