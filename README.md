@@ -31,7 +31,40 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 - Run `git clone https://github.com/WhatDreamscost/WhatDreamsCost-ComfyUI`
 - Or download through the ComfyUI Manager.
 
+### Optional Prompt Optimizer Dependencies
+
+The LTX Director Prompt Optimizer can use local vision-language models. If you want to use it, install the optional dependencies from this repo:
+
+```bash
+pip install -r requirements.txt
+```
+
+The optimizer can auto-download supported Hugging Face models into your ComfyUI models folder when you press Generate. Some NSFW/unredacted models may require a Hugging Face access token and accepting the model terms on Hugging Face first.
+
 # 🔄 Recent Updates
+
+**v1.3.2**
+  * **LTX Director Prompt Optimizer**
+    - Added a new local prompt optimizer window to LTX Director.
+    - Uses timeline images in order to generate LTX/Prompt Relay style per-segment prompts.
+    - Supports SFW and NSFW/unredacted prompt modes.
+    - Lets you write a direction for each image, such as `The woman smiles`, then generates a more polished motion prompt from that.
+    - Existing Director prompts are prefilled, and each segment has a checkbox so you can choose what gets optimized.
+    - Replace updates only the checked prompts in the Director node; Cancel closes without changing prompts.
+    - Supports local model aliases including Qwen3-VL, Qwen2.5-VL, Florence 2, and a fallback text backend.
+    - Models auto-download when missing. Hugging Face token support is included for gated/private models.
+    - Added clearer Generate status messages, background job polling, and a learned progress bar that estimates prompt generation time based on your hardware/model history.
+    - Added VRAM preflight cleanup before loading optimizer models to reduce OOM risk after running LTX generation.
+    - Backend image inputs are downscaled to 768px max side before VLM inference to help avoid OOM with 2K+ images.
+    - Optimizer models unload when the window closes, when Replace/Cancel is pressed, or when switching models.
+    - Prompt generation is now motion-only: it uses images as references for action, expression, camera movement, continuity, and implied sound instead of describing static image details.
+    - Previous and next timeline segments are used for natural motion continuity unless the current direction says `cut scene`, `hard cut`, `new scene`, or `transition`.
+    - The optimizer UI now has aligned rows, centered thumbnails, row height controls, and does not close from accidental mouse movement while editing.
+
+  * **LTX Director UI and Privacy Updates**
+    - Added sorting to the timeline image browser: newest, oldest, name A-Z, and name Z-A.
+    - Fixed the initial hidden-image state after refresh.
+    - Thumbnail cache now has encrypted private thumbnails when privacy mode is enabled, and private cache files are cleared when toggling privacy.
 
 **v1.3.1**
   * **LTX Director Example Workflow Fix**
@@ -118,14 +151,88 @@ A Complete Timeline Editor For LTX 2.3. This is the sucessor of my previous node
 **Main Features:**
 - **Fully Functional Timeline Editor:** I spent hours studying various video editors and ended up with this design. If anyone has ideas for improvements let me know! I will adding documentation on all the functions soon.
 - **Prompt Relay integrated:** This unlocks the ability to have granular control over video generation. For more information on Prompt Relay go here, https://gordonchen19.github.io/Prompt-Relay/
+- **Prompt Optimizer:** Generate LTX/Prompt Relay friendly motion prompts from your timeline images, text directions, and segment order. Includes SFW/NSFW modes, local VLM support, Hugging Face token support, learned progress estimates, and Replace/Cancel workflow.
 - **First, Middle, Last Frame Support:** This has by far the easiest method of creating first/last frames videos. It supports any number of keyframes, and will be the successor of my previous nodes.
 - **Custom Audio Support:** Import, trim, and combine your own audio clips in this node. Enabling custom audio is as simple as clicking 1 button. It is also compatible with every other feature in the node, include first/last frames, t2v, i2v, and prompt relay.
 - **Image to Video:** Part of the goal of this node was to make it easier to do everything, including Image to Video. It has built in resize functionality, and of course all the benifits of the prompt relay and custom audio integration.
 - **Text to Video:** Use text segments to create T2V videos. Compatible with all other features of the node.
+- **Privacy Mode Improvements:** Timeline image thumbnails can be hidden in the UI, and private thumbnail cache files are encrypted when privacy mode is enabled.
 
 Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
 
 **Tutorial videos and documentation coming soon**
+
+### LTX Director Prompt Optimizer
+
+![LTX Prompt Optimizer flow](assets/readme/ltx-prompt-optimizer-workflow.png)
+
+The Prompt Optimizer is opened from the icon in the LTX Director toolbar. It shows the Director timeline in segment order with:
+
+- a checkbox for whether that segment should be optimized
+- a thumbnail or text placeholder
+- the current prompt/direction text
+- the generated optimized LTX prompt
+- row height controls so both text boxes resize together
+
+![LTX Prompt Optimizer window map](assets/readme/ltx-prompt-optimizer-window.png)
+
+It is designed for LTX Prompt Relay style prompting. Instead of writing long image captions, it focuses on the motion that should happen during each segment:
+
+- actions and gestures
+- expression changes
+- camera movement
+- temporal continuation from the previous/next segment
+- visible or implied sound cues
+
+Static image details like clothing, lighting, background, or object appearance are avoided unless you explicitly ask for them or a tiny actor reference is needed for clarity. If the segment direction contains cut wording like `cut scene`, `hard cut`, `new scene`, or `transition`, the optimizer treats it as a new shot instead of trying to blend from neighboring segments.
+
+You can type short helping directions per segment, for example:
+
+```text
+The woman smiles and turns toward camera
+```
+
+If a direction is empty, the selected model uses the image and timeline context to suggest motion for that segment.
+
+Supported local model aliases:
+
+- `qwen3_vl_8b_quality`
+- `qwen3_vl_4b_fast`
+- `qwen3_vl_4b_unredacted`
+- `qwen3_vl_8b_nsfw_caption`
+- `qwen2_5_vl_7b_abliterated_legacy`
+- `florence2_fast_caption`
+- `fallback_text_backend`
+
+The fallback backend is text-only and does not understand images. Qwen-style backends can use previous/current/next images for continuity, while Florence uses the current image plus text context.
+
+The SFW/NSFW toggle changes the prompt instructions:
+
+- SFW asks for cinematic, non-explicit motion prompts.
+- NSFW asks for NSFW/unredacted wording and allows explicit adult visual language only when adult content is visible.
+
+The toggle does not switch models by itself. For stronger unredacted behavior, select an unredacted/NSFW model alias as well as NSFW mode.
+
+Models are downloaded into your ComfyUI models folder when needed:
+
+- Qwen/Qwen2.5 models go under `models/VLM`
+- Florence goes under `models/LLM`
+
+If a model is gated/private, add a Hugging Face access token inside the optimizer window. The token is stored locally in:
+
+```text
+config/ltx_prompt_optimizer_settings.json
+```
+
+Prompt timing estimates are also stored locally, separate from workflows:
+
+```text
+config/ltx_prompt_optimizer_timing.json
+```
+
+![LTX Prompt Optimizer VRAM and image safety](assets/readme/ltx-prompt-optimizer-memory.png)
+
+To reduce OOM errors, the optimizer releases Comfy's loaded model cache before loading a VLM and downscales optimizer image inputs to 768px max side before inference. This may make the next LTX generation reload its model, but it should be much safer on limited VRAM.
 
 ### LTX Director Identity Anchors
 
