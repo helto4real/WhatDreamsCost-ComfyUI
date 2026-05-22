@@ -342,6 +342,33 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("Prev=She turns toward the camera", text)
         self.assertIn("Next=She starts laughing", text)
 
+    def test_text_segment_instruction_includes_text_context(self):
+        segment = {"id": "b", "prompt": "A quiet pause between shots", "type": "text"}
+        text = optimizer.build_optimizer_instruction(
+            segment,
+            "sfw",
+            1,
+            3,
+            "She turns toward the camera",
+            "She starts laughing",
+        )
+        self.assertIn("text-only timeline segment", text)
+        self.assertIn("no current image", text)
+        self.assertIn("A quiet pause between shots", text)
+
+    def test_custom_prompt_template_supports_text_placeholders(self):
+        segment = {"id": "b", "prompt": "A quiet pause", "type": "text"}
+        text = optimizer.build_optimizer_instruction(
+            segment,
+            "sfw",
+            1,
+            3,
+            template="{segment_type}|{visual_context}|{text_segment_instruction}",
+        )
+        self.assertIn("text|", text)
+        self.assertIn("no current image", text)
+        self.assertIn("text-only timeline segment", text)
+
     def test_fallback_optimize_uses_direction(self):
         text = optimizer.fallback_optimize_segment(
             {"id": "a", "direction": "The woman smiles", "type": "image"},
@@ -418,13 +445,14 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
-            with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
-                    with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
-                        with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
-                            result = optimizer.optimize_segments(
-                                {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
-                            )
+            with mock.patch.object(optimizer, "active_prompt_template", return_value=optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE):
+                with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                    with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                        with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                            with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                                result = optimizer.optimize_segments(
+                                    {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
+                                )
 
         self.assertEqual([item["prompt"] for item in result["results"]], ["generated-1", "generated-2"])
         self.assertEqual([label for label, _ in calls[1][0]], ["Previous", "Current", "Next"])
@@ -443,6 +471,30 @@ class LTXPromptOptimizerTests(unittest.TestCase):
 
         self.assertEqual([label for label, _ in images], ["Previous", "Current", "Next"])
         self.assertEqual([image.size for _, image in images], [(768, 384), (384, 768), (768, 256)])
+
+    def test_qwen_text_context_images_use_previous_and_next_visuals(self):
+        def fake_decode(segment):
+            return None if segment["id"] == "b" else f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "prompt": "She turns", "type": "image"},
+            {"id": "b", "prompt": "A pause", "type": "text"},
+            {"id": "c", "prompt": "She laughs", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+            images = optimizer._qwen_context_images(segments, 1, True)
+        self.assertEqual([label for label, _ in images], ["Previous", "Next"])
+        self.assertEqual([image for _, image in images], ["image-a", "image-c"])
+
+    def test_qwen_text_cut_uses_no_neighbor_images(self):
+        segments = [
+            {"id": "a", "prompt": "She turns", "type": "image"},
+            {"id": "b", "prompt": "hard cut to black", "type": "text"},
+            {"id": "c", "prompt": "She laughs", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "decode_image", return_value="image"):
+            images = optimizer._qwen_context_images(segments, 1, False)
+        self.assertEqual(images, [])
 
     def test_optimize_qwen_cut_uses_current_image_only(self):
         calls = []
@@ -471,6 +523,36 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("new cut", calls[0][1])
         self.assertNotIn("She turns toward the camera", calls[0][1])
         self.assertNotIn("She starts laughing", calls[0][1])
+
+    def test_optimize_qwen_text_segment_uses_neighbor_images(self):
+        calls = []
+
+        def fake_generate(_spec, _path, images, instruction, _status, loaded=None):
+            calls.append((images, instruction))
+            return "generated text prompt"
+
+        def fake_decode(segment):
+            return None if segment["type"] == "text" else f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "selected": False, "prompt": "She turns toward the camera", "type": "image"},
+            {"id": "b", "selected": True, "prompt": "A quiet pause", "type": "text"},
+            {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/qwen")):
+            with mock.patch.object(optimizer, "active_prompt_template", return_value=optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE):
+                with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                    with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                        with mock.patch.object(optimizer, "_load_qwen_model", return_value={"loaded": True}):
+                            with mock.patch.object(optimizer, "_generate_qwen", side_effect=fake_generate):
+                                result = optimizer.optimize_segments(
+                                    {"model": "qwen3_vl_4b_fast", "mode": "sfw", "segments": segments}
+                                )
+
+        self.assertEqual(result["results"][0]["prompt"], "generated text prompt")
+        self.assertEqual([label for label, _ in calls[0][0]], ["Previous", "Next"])
+        self.assertEqual([image for _, image in calls[0][0]], ["image-a", "image-c"])
+        self.assertIn("text-only timeline segment", calls[0][1])
 
     def test_optimize_qwen_keeps_generation_phase_after_loading(self):
         messages = []
@@ -561,18 +643,60 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
         ]
         with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
-            with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
-                with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
-                    with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
-                        with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
-                            result = optimizer.optimize_segments(
-                                {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
-                            )
+            with mock.patch.object(optimizer, "active_prompt_template", return_value=optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE):
+                with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                    with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                        with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
+                            with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
+                                result = optimizer.optimize_segments(
+                                    {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                                )
 
         self.assertEqual(result["results"][0]["prompt"], "florence generated")
         self.assertEqual(calls[0][0], "image-b")
         self.assertIn("Previous segment motion context: She turns toward the camera", calls[0][1])
         self.assertIn("Next segment motion hint: She starts laughing", calls[0][1])
+
+    def test_optimize_florence_text_segment_uses_nearest_neighbor_image(self):
+        calls = []
+
+        def fake_generate(_spec, _path, image, instruction, _status, loaded=None):
+            calls.append((image, instruction))
+            return "florence text generated"
+
+        def fake_decode(segment):
+            return None if segment["type"] == "text" else f"image-{segment['id']}"
+
+        segments = [
+            {"id": "a", "selected": False, "prompt": "She turns toward the camera", "type": "image"},
+            {"id": "b", "selected": True, "prompt": "A quiet pause", "type": "text"},
+            {"id": "c", "selected": False, "prompt": "She starts laughing", "type": "image"},
+        ]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
+            with mock.patch.object(optimizer, "active_prompt_template", return_value=optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE):
+                with mock.patch.object(optimizer, "decode_image", side_effect=fake_decode):
+                    with mock.patch.object(optimizer, "prompt_optimizer_vram_preflight"):
+                        with mock.patch.object(optimizer, "_load_florence_model", return_value={"loaded": True}):
+                            with mock.patch.object(optimizer, "_generate_florence", side_effect=fake_generate):
+                                result = optimizer.optimize_segments(
+                                    {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                                )
+
+        self.assertEqual(result["results"][0]["prompt"], "florence text generated")
+        self.assertEqual(calls[0][0], "image-a")
+        self.assertIn("text-only timeline segment", calls[0][1])
+
+    def test_optimize_florence_text_segment_without_images_uses_fallback(self):
+        segments = [{"id": "b", "selected": True, "prompt": "", "type": "text"}]
+        with mock.patch.object(optimizer, "ensure_model_downloaded", return_value=Path("/tmp/florence")):
+            with mock.patch.object(optimizer, "decode_image", return_value=None):
+                with mock.patch.object(optimizer, "_load_florence_model") as load_model:
+                    result = optimizer.optimize_segments(
+                        {"model": "florence2_fast_caption", "mode": "sfw", "segments": segments}
+                    )
+
+        load_model.assert_not_called()
+        self.assertIn("text-driven timeline section", result["results"][0]["prompt"].lower())
 
     def test_optimizer_job_completes(self):
         with tempfile.TemporaryDirectory() as tmp:

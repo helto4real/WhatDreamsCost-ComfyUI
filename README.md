@@ -177,6 +177,8 @@ The Prompt Optimizer is opened from the icon in the LTX Director toolbar. It sho
 
 ![LTX Prompt Optimizer window map](assets/readme/ltx-prompt-optimizer-window.png)
 
+It supports both image and text timeline sections. Text sections can use neighboring images and prompts as continuity context, while image sections use the current image as the main motion reference.
+
 It is designed for LTX Prompt Relay style prompting. Instead of writing long image captions, it focuses on the motion that should happen during each segment:
 
 - actions and gestures
@@ -234,6 +236,8 @@ config/ltx_prompt_optimizer_timing.json
 ![LTX Prompt Optimizer VRAM and image safety](assets/readme/ltx-prompt-optimizer-memory.png)
 
 To reduce OOM errors, the optimizer releases Comfy's loaded model cache before loading a VLM and downscales optimizer image inputs to 768px max side before inference. This may make the next LTX generation reload its model, but it should be much safer on limited VRAM.
+
+Editable optimizer prompt templates can use placeholders like `{rating}`, `{direction}`, `{continuity}`, `{segment_type}`, `{visual_context}`, and `{text_segment_instruction}`.
 
 ### LTX Director Identity Anchors
 

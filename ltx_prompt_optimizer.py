@@ -41,6 +41,8 @@ OPTIMIZER_IMAGE_MAX_SIDE = 768
 DEFAULT_OPTIMIZER_PROMPT_TEMPLATE = (
     "You are optimizing a local prompt for LTX Director Prompt Relay. "
     "Generate one {rating} video prompt for segment {segment_index} of {segment_total}. "
+    "{text_segment_instruction} "
+    "{visual_context} "
     "Use provided images only as motion references, not as caption targets. "
     "Infer pose, action, motion direction, expression changes, camera movement, temporal continuation, "
     "and visible or implied sound cues. "
@@ -602,6 +604,35 @@ def segment_requests_cut(segment: dict[str, Any]) -> bool:
     return bool(CUT_SCENE_RE.search(segment_direction_text(segment)))
 
 
+def segment_type(segment: dict[str, Any] | None) -> str:
+    if not isinstance(segment, dict):
+        return "image"
+    return clean_prompt_text(segment.get("type") or "image").lower() or "image"
+
+
+def is_text_segment(segment: dict[str, Any] | None) -> bool:
+    return segment_type(segment) == "text"
+
+
+def visual_context_instruction(segment: dict[str, Any], cut: bool) -> str:
+    if is_text_segment(segment):
+        if cut:
+            return "No adjacent images are used because this text segment requests a cut."
+        return "This text segment has no current image; any provided previous or next images are only continuity references."
+    if cut:
+        return "Use the current image as the only visual reference for this cut segment."
+    return "Use the current image as the primary visual reference; adjacent images may be provided for continuity."
+
+
+def text_segment_instruction(segment: dict[str, Any]) -> str:
+    if not is_text_segment(segment):
+        return ""
+    return (
+        "This is a text-only timeline segment. Use the text row as the main direction and generate the motion, "
+        "action, camera movement, and sound that should occur during this T2V-style section."
+    )
+
+
 def fallback_optimize_segment(
     segment: dict[str, Any],
     mode: str,
@@ -616,7 +647,7 @@ def fallback_optimize_segment(
     if direction:
         core = direction
     elif segment.get("type") == "text":
-        core = "A text-driven transition continues the scene with clear subject motion"
+        core = "A text-driven timeline section continues with clear subject motion, camera movement, and temporal action"
     else:
         core = "The visible subject moves naturally with clear action and camera movement"
 
@@ -676,9 +707,12 @@ def build_optimizer_instruction(
         "previous_prompt": previous_prompt or "none",
         "next_prompt": next_prompt or "none",
         "cut_instruction": "new cut" if cut else "continue naturally",
+        "segment_type": segment_type(segment),
+        "visual_context": visual_context_instruction(segment, cut),
+        "text_segment_instruction": text_segment_instruction(segment),
     }
     try:
-        return (template or active_prompt_template()).format_map(values)
+        return (template or DEFAULT_OPTIMIZER_PROMPT_TEMPLATE).format_map(values)
     except (KeyError, ValueError) as exc:
         raise PromptOptimizerError(f"Could not format prompt optimizer template: {exc}") from exc
 
@@ -811,11 +845,41 @@ def _next_context(segments: list[Any], index: int) -> str:
     return segment_direction_text(_neighbor_segment(segments, index, 1))
 
 
+def _nearest_context_image(
+    segments: list[Any],
+    index: int,
+    step: int,
+    label: str,
+) -> tuple[str, Image.Image] | None:
+    neighbor_index = index + step
+    while 0 <= neighbor_index < len(segments):
+        segment = segments[neighbor_index]
+        if isinstance(segment, dict):
+            image = decode_image(segment)
+            if image is not None:
+                return (label, image)
+        neighbor_index += step
+    return None
+
+
 def _qwen_context_images(
     segments: list[Any],
     index: int,
     include_neighbors: bool,
 ) -> list[tuple[str, Image.Image]]:
+    segment = _neighbor_segment(segments, index, 0)
+    if is_text_segment(segment):
+        if not include_neighbors:
+            return []
+        images: list[tuple[str, Image.Image]] = []
+        previous = _nearest_context_image(segments, index, -1, "Previous")
+        next_image = _nearest_context_image(segments, index, 1, "Next")
+        if previous is not None:
+            images.append(previous)
+        if next_image is not None:
+            images.append(next_image)
+        return images
+
     offsets = [0] if not include_neighbors else [-1, 0, 1]
     labels = {-1: "Previous", 0: "Current", 1: "Next"}
     images: list[tuple[str, Image.Image]] = []
@@ -827,6 +891,22 @@ def _qwen_context_images(
         if image is not None:
             images.append((labels[offset], image))
     return images
+
+
+def _florence_context_image(segments: list[Any], index: int, include_neighbors: bool) -> Image.Image | None:
+    segment = _neighbor_segment(segments, index, 0)
+    if not segment:
+        return None
+    image = decode_image(segment)
+    if image is not None:
+        return image
+    if not include_neighbors or not is_text_segment(segment):
+        return None
+    previous = _nearest_context_image(segments, index, -1, "Previous")
+    if previous is not None:
+        return previous[1]
+    next_image = _nearest_context_image(segments, index, 1, "Next")
+    return next_image[1] if next_image is not None else None
 
 
 def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[str, Any]:
@@ -875,10 +955,17 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_qwen(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
             elif spec.backend == "florence":
-                image = decode_image(segment)
+                image = _florence_context_image(segments, index, not cut)
+                if image is None:
+                    status(f"Generating fallback prompt {generated_count} of {selected_total}...", generated_count, selected_total)
+                    optimized = fallback_optimize_segment(segment, mode, index, total, previous_prompt, next_prompt)
+                    status(f"Completed prompt {generated_count} of {selected_total}.", generated_count, selected_total)
+                    generated_by_id[seg_id] = optimized
+                    results.append({"id": seg_id, "prompt": optimized})
+                    continue
                 if image is not None:
                     prompt_optimizer_vram_preflight(status)
-                loaded = _load_florence_model(spec, path, status) if image is not None else None  # type: ignore[arg-type]
+                loaded = _load_florence_model(spec, path, status)  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_florence(spec, path, image, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
             else:
