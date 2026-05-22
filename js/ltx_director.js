@@ -1158,9 +1158,9 @@ const STYLES = `
   }
   .pr-prompt-optimizer-row {
     display: grid;
-    grid-template-columns: 24px 86px minmax(190px, 1fr) minmax(230px, 1.25fr);
+    grid-template-columns: 24px 96px minmax(220px, 1fr) minmax(320px, 1.35fr);
     gap: 8px;
-    align-items: stretch;
+    align-items: start;
     background: #181818;
     border: 1px solid #444;
     border-radius: 5px;
@@ -1173,12 +1173,14 @@ const STYLES = `
   }
   .pr-prompt-optimizer-thumb {
     position: relative;
-    min-width: 0;
+    width: 96px;
+    height: 96px;
+    min-width: 96px;
+    align-self: center;
     background: #101010;
     border: 1px solid #2d2d2d;
     border-radius: 4px;
     overflow: hidden;
-    aspect-ratio: 1 / 1;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1203,6 +1205,7 @@ const STYLES = `
     flex-direction: column;
     gap: 5px;
     min-width: 0;
+    align-self: start;
   }
   .pr-prompt-optimizer-label {
     color: #aaa;
@@ -1214,7 +1217,8 @@ const STYLES = `
     text-overflow: ellipsis;
   }
   .pr-prompt-optimizer-field textarea {
-    min-height: 72px;
+    height: 96px;
+    min-height: 96px;
     resize: vertical;
     background: #222;
     color: #e0e0e0;
@@ -1225,6 +1229,26 @@ const STYLES = `
     line-height: 1.35;
     box-sizing: border-box;
     width: 100%;
+  }
+  @media (max-width: 880px) {
+    .pr-prompt-optimizer-row {
+      grid-template-columns: 24px 96px minmax(0, 1fr);
+      grid-template-areas:
+        "check thumb direction"
+        "check thumb generated";
+    }
+    .pr-prompt-optimizer-check {
+      grid-area: check;
+    }
+    .pr-prompt-optimizer-thumb {
+      grid-area: thumb;
+    }
+    .pr-prompt-optimizer-field:first-of-type {
+      grid-area: direction;
+    }
+    .pr-prompt-optimizer-field:last-of-type {
+      grid-area: generated;
+    }
   }
   .pr-prompt-optimizer-status {
     color: #aaa;
@@ -2621,6 +2645,9 @@ class TimelineEditor {
     if (dialog && unloadModel) {
       this.unloadPromptOptimizerModel(dialog.dataset.loadedModelAlias || "");
     }
+    for (const observer of dialog?._promptOptimizerResizeObservers || []) {
+      observer.disconnect();
+    }
     dialog?.remove();
   }
 
@@ -2728,6 +2755,7 @@ class TimelineEditor {
     const rows = this.getPromptOptimizerSegments();
     const overlay = document.createElement("div");
     overlay.className = "pr-image-browser-dialog pr-prompt-optimizer-dialog";
+    overlay._promptOptimizerResizeObservers = [];
     overlay.innerHTML = `
       <div class="pr-image-browser-panel pr-prompt-optimizer-panel">
         <h3>LTX Prompt Optimizer</h3>
@@ -2822,6 +2850,26 @@ class TimelineEditor {
       clearTokenBtn.disabled = busy || this.privacyLocked;
       for (const button of modeButtons) button.disabled = busy || this.privacyLocked;
     };
+    const lockRowTextareaHeights = (first, second) => {
+      if (typeof ResizeObserver === "undefined") return;
+      let syncing = false;
+      const sync = () => {
+        if (syncing) return;
+        const firstHeight = first.getBoundingClientRect().height;
+        const secondHeight = second.getBoundingClientRect().height;
+        const target = Math.max(96, Math.round(firstHeight), Math.round(secondHeight));
+        syncing = true;
+        first.style.height = `${target}px`;
+        second.style.height = `${target}px`;
+        requestAnimationFrame(() => {
+          syncing = false;
+        });
+      };
+      const observer = new ResizeObserver(sync);
+      observer.observe(first);
+      observer.observe(second);
+      overlay._promptOptimizerResizeObservers.push(observer);
+    };
 
     const renderRows = () => {
       grid.innerHTML = "";
@@ -2879,6 +2927,7 @@ class TimelineEditor {
         generated.placeholder = "Generated prompt will appear here...";
         generatedWrap.appendChild(generatedLabel);
         generatedWrap.appendChild(generated);
+        lockRowTextareaHeights(direction, generated);
 
         for (const input of [check, direction, generated]) {
           input.disabled = this.privacyLocked;
