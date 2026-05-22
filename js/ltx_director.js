@@ -1158,7 +1158,7 @@ const STYLES = `
   }
   .pr-prompt-optimizer-row {
     display: grid;
-    grid-template-columns: 24px 96px minmax(220px, 1fr) minmax(320px, 1.35fr);
+    grid-template-columns: 42px 96px minmax(220px, 1fr) minmax(320px, 1.35fr);
     gap: 8px;
     align-items: start;
     background: #181818;
@@ -1167,9 +1167,37 @@ const STYLES = `
     padding: 8px;
     min-width: 0;
   }
-  .pr-prompt-optimizer-check {
+  .pr-prompt-optimizer-row-tools {
     align-self: center;
+    display: grid;
+    gap: 8px;
+    justify-items: center;
+  }
+  .pr-prompt-optimizer-check {
     justify-self: center;
+  }
+  .pr-prompt-optimizer-height-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .pr-prompt-optimizer-height-controls button {
+    width: 24px;
+    height: 22px;
+    padding: 0;
+    line-height: 1;
+    border: 1px solid #444;
+    border-radius: 4px;
+    background: #262626;
+    color: #ddd;
+    cursor: pointer;
+  }
+  .pr-prompt-optimizer-height-controls button:hover {
+    background: #333;
+  }
+  .pr-prompt-optimizer-height-controls button:disabled {
+    opacity: .45;
+    cursor: default;
   }
   .pr-prompt-optimizer-thumb {
     position: relative;
@@ -1218,8 +1246,8 @@ const STYLES = `
   }
   .pr-prompt-optimizer-field textarea {
     height: 96px;
-    min-height: 96px;
-    resize: vertical;
+    min-height: 72px;
+    resize: none;
     background: #222;
     color: #e0e0e0;
     border: 1px solid #333;
@@ -1232,13 +1260,13 @@ const STYLES = `
   }
   @media (max-width: 880px) {
     .pr-prompt-optimizer-row {
-      grid-template-columns: 24px 96px minmax(0, 1fr);
+      grid-template-columns: 42px 96px minmax(0, 1fr);
       grid-template-areas:
-        "check thumb direction"
-        "check thumb generated";
+        "tools thumb direction"
+        "tools thumb generated";
     }
-    .pr-prompt-optimizer-check {
-      grid-area: check;
+    .pr-prompt-optimizer-row-tools {
+      grid-area: tools;
     }
     .pr-prompt-optimizer-thumb {
       grid-area: thumb;
@@ -2645,9 +2673,6 @@ class TimelineEditor {
     if (dialog && unloadModel) {
       this.unloadPromptOptimizerModel(dialog.dataset.loadedModelAlias || "");
     }
-    for (const observer of dialog?._promptOptimizerResizeObservers || []) {
-      observer.disconnect();
-    }
     dialog?.remove();
   }
 
@@ -2755,7 +2780,6 @@ class TimelineEditor {
     const rows = this.getPromptOptimizerSegments();
     const overlay = document.createElement("div");
     overlay.className = "pr-image-browser-dialog pr-prompt-optimizer-dialog";
-    overlay._promptOptimizerResizeObservers = [];
     overlay.innerHTML = `
       <div class="pr-image-browser-panel pr-prompt-optimizer-panel">
         <h3>LTX Prompt Optimizer</h3>
@@ -2800,6 +2824,7 @@ class TimelineEditor {
     const grid = overlay.querySelector(".pr-prompt-optimizer-grid");
     const generateBtn = overlay.querySelector(".generate");
     const replaceBtn = overlay.querySelector(".replace");
+    const cancelBtn = overlay.querySelector(".cancel");
     const modeButtons = [...overlay.querySelectorAll(".mode")];
     let mode = "sfw";
     let loadedModelAlias = "";
@@ -2809,6 +2834,10 @@ class TimelineEditor {
     grid.classList.toggle("show-images", !hideImages);
 
     const rowState = new Map();
+    const rowTextMinHeight = 72;
+    const rowTextMaxHeight = 288;
+    const rowTextStep = 24;
+    const rowTextDefaultHeight = 96;
     const formatEta = (seconds) => {
       const value = Number(seconds);
       if (!Number.isFinite(value) || value < 0.5) return "";
@@ -2841,6 +2870,15 @@ class TimelineEditor {
       this.unloadPromptOptimizerModel(alias);
       if (alias === loadedModelAlias) markLoadedModel("");
     };
+    const setRowTextareaHeight = (state, height) => {
+      if (!state) return;
+      const target = Math.max(rowTextMinHeight, Math.min(rowTextMaxHeight, Math.round(height)));
+      state.textHeight = target;
+      state.direction.style.height = `${target}px`;
+      state.generated.style.height = `${target}px`;
+      if (state.decreaseHeight) state.decreaseHeight.disabled = this.privacyLocked || target <= rowTextMinHeight;
+      if (state.increaseHeight) state.increaseHeight.disabled = this.privacyLocked || target >= rowTextMaxHeight;
+    };
     const setBusy = (busy) => {
       generateBtn.disabled = busy || this.privacyLocked;
       replaceBtn.disabled = busy || this.privacyLocked;
@@ -2849,26 +2887,10 @@ class TimelineEditor {
       saveTokenBtn.disabled = busy || this.privacyLocked;
       clearTokenBtn.disabled = busy || this.privacyLocked;
       for (const button of modeButtons) button.disabled = busy || this.privacyLocked;
-    };
-    const lockRowTextareaHeights = (first, second) => {
-      if (typeof ResizeObserver === "undefined") return;
-      let syncing = false;
-      const sync = () => {
-        if (syncing) return;
-        const firstHeight = first.getBoundingClientRect().height;
-        const secondHeight = second.getBoundingClientRect().height;
-        const target = Math.max(96, Math.round(firstHeight), Math.round(secondHeight));
-        syncing = true;
-        first.style.height = `${target}px`;
-        second.style.height = `${target}px`;
-        requestAnimationFrame(() => {
-          syncing = false;
-        });
-      };
-      const observer = new ResizeObserver(sync);
-      observer.observe(first);
-      observer.observe(second);
-      overlay._promptOptimizerResizeObservers.push(observer);
+      for (const state of rowState.values()) {
+        if (state.decreaseHeight) state.decreaseHeight.disabled = busy || this.privacyLocked || state.textHeight <= rowTextMinHeight;
+        if (state.increaseHeight) state.increaseHeight.disabled = busy || this.privacyLocked || state.textHeight >= rowTextMaxHeight;
+      }
     };
 
     const renderRows = () => {
@@ -2894,6 +2916,24 @@ class TimelineEditor {
         check.className = "pr-prompt-optimizer-check";
         check.checked = true;
         check.title = "Optimize this segment";
+
+        const rowTools = document.createElement("div");
+        rowTools.className = "pr-prompt-optimizer-row-tools";
+        rowTools.appendChild(check);
+
+        const heightControls = document.createElement("div");
+        heightControls.className = "pr-prompt-optimizer-height-controls";
+        const decreaseHeight = document.createElement("button");
+        decreaseHeight.type = "button";
+        decreaseHeight.textContent = "-";
+        decreaseHeight.title = "Decrease row height";
+        const increaseHeight = document.createElement("button");
+        increaseHeight.type = "button";
+        increaseHeight.textContent = "+";
+        increaseHeight.title = "Increase row height";
+        heightControls.appendChild(decreaseHeight);
+        heightControls.appendChild(increaseHeight);
+        rowTools.appendChild(heightControls);
 
         const thumb = document.createElement("div");
         thumb.className = "pr-prompt-optimizer-thumb";
@@ -2927,21 +2967,43 @@ class TimelineEditor {
         generated.placeholder = "Generated prompt will appear here...";
         generatedWrap.appendChild(generatedLabel);
         generatedWrap.appendChild(generated);
-        lockRowTextareaHeights(direction, generated);
 
-        for (const input of [check, direction, generated]) {
+        const state = {
+          item,
+          check,
+          direction,
+          generated,
+          decreaseHeight,
+          increaseHeight,
+          textHeight: rowTextDefaultHeight,
+        };
+        rowState.set(item.id, state);
+        setRowTextareaHeight(state, rowTextDefaultHeight);
+
+        decreaseHeight.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setRowTextareaHeight(state, state.textHeight - rowTextStep);
+        });
+        increaseHeight.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setRowTextareaHeight(state, state.textHeight + rowTextStep);
+        });
+
+        for (const input of [check, decreaseHeight, increaseHeight, direction, generated]) {
           input.disabled = this.privacyLocked;
           for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
             input.addEventListener(eventName, (event) => event.stopPropagation());
           }
         }
+        setRowTextareaHeight(state, state.textHeight);
 
-        row.appendChild(check);
+        row.appendChild(rowTools);
         row.appendChild(thumb);
         row.appendChild(directionWrap);
         row.appendChild(generatedWrap);
         grid.appendChild(row);
-        rowState.set(item.id, { item, check, direction, generated });
       }
     };
 
@@ -3097,9 +3159,8 @@ class TimelineEditor {
       }
     });
 
-    overlay.querySelector(".cancel").addEventListener("click", () => this.closePromptOptimizer());
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) this.closePromptOptimizer();
+    cancelBtn.addEventListener("click", () => {
+      this.closePromptOptimizer();
     });
     for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
       panel.addEventListener(eventName, (event) => event.stopPropagation());
