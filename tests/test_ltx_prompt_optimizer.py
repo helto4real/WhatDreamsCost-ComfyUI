@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import sys
+import struct
 import tempfile
 import time
 import types
@@ -21,6 +22,24 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         image.save(buffer, format="PNG")
         return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
+    def _write_fake_gguf(self, path, architecture="gemma4"):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = b"general.architecture"
+        value = architecture.encode("utf-8")
+        payload = [
+            b"GGUF",
+            struct.pack("<I", 3),
+            struct.pack("<Q", 0),
+            struct.pack("<Q", 1),
+            struct.pack("<Q", len(key)),
+            key,
+            struct.pack("<I", 8),
+            struct.pack("<Q", len(value)),
+            value,
+        ]
+        path.write_bytes(b"".join(payload))
+
     def test_resolve_model_known_alias(self):
         spec = optimizer.resolve_model("qwen3_vl_4b_fast")
         self.assertEqual(spec.repo_id, "Qwen/Qwen3-VL-4B-Instruct")
@@ -29,6 +48,24 @@ class LTXPromptOptimizerTests(unittest.TestCase):
     def test_nsfw_caption_alias_uses_live_repo(self):
         spec = optimizer.resolve_model("qwen3_vl_8b_nsfw_caption")
         self.assertEqual(spec.repo_id, "monkeyslikebananas/Qwen3-VL-8B-NSFW-Caption-V4.5")
+
+    def test_gemma_aliases_use_exact_file_urls(self):
+        fp8 = optimizer.resolve_model("gemma4_e4b_it_fp8_scaled")
+        self.assertEqual(fp8.backend, "gemma_safetensors")
+        self.assertEqual(fp8.file_urls, (optimizer.GEMMA4_E4B_FP8_URL,))
+
+        gguf = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        self.assertEqual(gguf.backend, "llama_cpp_vision")
+        self.assertEqual(
+            gguf.file_urls,
+            (optimizer.GEMMA4_E4B_UNCENSORED_Q8_GGUF_URL, optimizer.GEMMA4_E4B_UNCENSORED_MMPROJ_URL),
+        )
+
+    def test_parse_hf_file_url_extracts_repo_revision_and_filename(self):
+        parsed = optimizer.parse_hf_file_url(optimizer.GEMMA4_E4B_FP8_URL)
+        self.assertEqual(parsed.repo_id, "Comfy-Org/gemma-4")
+        self.assertEqual(parsed.revision, "main")
+        self.assertEqual(parsed.filename, "text_encoders/gemma4_e4b_it_fp8_scaled.safetensors")
 
     def test_resolve_model_rejects_unknown_alias(self):
         with self.assertRaises(optimizer.PromptOptimizerError):
@@ -39,6 +76,22 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         fallback = next(m for m in statuses["models"] if m["alias"] == "fallback_text_backend")
         self.assertEqual(fallback["status"], "ready")
         self.assertEqual(fallback["missing_dependencies"], [])
+
+    def test_gguf_status_requires_main_model_and_mmproj(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            main_path = models_dir / spec.model_subdir / "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            main_path.parent.mkdir(parents=True)
+            main_path.write_text("fake", encoding="utf-8")
+            with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                with mock.patch.object(optimizer, "missing_dependencies", return_value=[]):
+                    statuses = optimizer.get_model_statuses()
+
+        model = next(m for m in statuses["models"] if m["alias"] == spec.alias)
+        self.assertEqual(model["status"], "not_downloaded")
+        self.assertFalse(model["downloaded"])
+        self.assertEqual(len(model["local_files"]), 2)
 
     def test_unload_optimizer_model_removes_loaded_alias_and_clears_cuda(self):
         class FakeCuda:
@@ -216,7 +269,129 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertEqual(result, model_path)
         self.assertEqual(calls["repo_id"], spec.repo_id)
         self.assertEqual(calls["token"], "hf_saved")
+        self.assertIn("tqdm_class", calls)
         self.assertTrue(any("Downloading" in message and str(model_path) in message for message in messages))
+
+    def test_download_progress_reporter_emits_byte_percent(self):
+        updates = []
+
+        def status(message, current=None, total=None, progress=None):
+            updates.append((message, current, total, progress))
+
+        reporter = optimizer.DownloadProgressReporter(status, total_bytes=200)
+        bar = reporter.tqdm_class("model.gguf", 1, 2, 100)(total=100)
+        bar.update(25)
+        bar.update(25)
+
+        self.assertEqual(updates[-1][0], "Downloading model.gguf...")
+        self.assertEqual(updates[-1][1:3], (1, 2))
+        self.assertEqual(updates[-1][3]["download_current_bytes"], 50)
+        self.assertEqual(updates[-1][3]["download_total_bytes"], 200)
+        self.assertEqual(updates[-1][3]["percent"], 25.0)
+
+    def test_ensure_exact_safetensors_download_uses_hf_hub_download(self):
+        spec = optimizer.resolve_model("gemma4_e4b_it_fp8_scaled")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            calls = []
+            fake_hub = types.ModuleType("huggingface_hub")
+
+            def fake_hf_hub_download(**kwargs):
+                calls.append(kwargs)
+                target = Path(kwargs["local_dir"]) / kwargs["filename"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self._write_fake_gguf(target)
+                return str(target)
+
+            fake_hub.hf_hub_download = fake_hf_hub_download
+            with mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                    with mock.patch.object(optimizer, "missing_dependencies", return_value=[]):
+                        result = optimizer.ensure_model_downloaded(spec)
+
+        self.assertEqual(result, models_dir / "text_encoders" / "gemma4_e4b_it_fp8_scaled.safetensors")
+        self.assertEqual(calls[0]["repo_id"], "Comfy-Org/gemma-4")
+        self.assertEqual(calls[0]["revision"], "main")
+        self.assertEqual(calls[0]["filename"], "text_encoders/gemma4_e4b_it_fp8_scaled.safetensors")
+        self.assertIn("tqdm_class", calls[0])
+
+    def test_ensure_exact_gguf_download_gets_model_and_mmproj(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            calls = []
+            fake_hub = types.ModuleType("huggingface_hub")
+
+            def fake_hf_hub_download(**kwargs):
+                calls.append(kwargs)
+                target = Path(kwargs["local_dir"]) / kwargs["filename"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self._write_fake_gguf(target)
+                return str(target)
+
+            fake_hub.hf_hub_download = fake_hf_hub_download
+            with mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                    with mock.patch.object(optimizer, "missing_dependencies", return_value=[]):
+                        result = optimizer.ensure_model_downloaded(spec)
+
+        self.assertEqual(result, models_dir / spec.model_subdir)
+        self.assertEqual([call["repo_id"] for call in calls], [spec.repo_id, spec.repo_id])
+        self.assertEqual([call["revision"] for call in calls], ["main", "main"])
+        self.assertEqual(
+            [call["filename"] for call in calls],
+            [
+                "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf",
+                "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf",
+            ],
+        )
+        self.assertTrue(all("tqdm_class" in call for call in calls))
+
+    def test_exact_gguf_download_reports_aggregate_progress_across_files(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        sizes = {
+            "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf": 100,
+            "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf": 300,
+        }
+        progress_updates = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            fake_hub = types.ModuleType("huggingface_hub")
+
+            def fake_hf_hub_url(repo_id, filename, revision=None):
+                return f"https://huggingface.co/{repo_id}/resolve/{revision or 'main'}/{filename}"
+
+            def fake_get_hf_file_metadata(url, token=None):
+                filename = url.rsplit("/", 1)[-1]
+                return types.SimpleNamespace(size=sizes[filename])
+
+            def fake_hf_hub_download(**kwargs):
+                filename = kwargs["filename"]
+                bar = kwargs["tqdm_class"](total=sizes[filename], desc=filename)
+                bar.update(sizes[filename])
+                bar.close()
+                target = Path(kwargs["local_dir"]) / filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                self._write_fake_gguf(target)
+                return str(target)
+
+            def status(_message, _current=None, _total=None, progress=None):
+                if progress and progress.get("download_total_bytes"):
+                    progress_updates.append(progress)
+
+            fake_hub.hf_hub_url = fake_hf_hub_url
+            fake_hub.get_hf_file_metadata = fake_get_hf_file_metadata
+            fake_hub.hf_hub_download = fake_hf_hub_download
+            with mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+                with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                    with mock.patch.object(optimizer, "missing_dependencies", return_value=[]):
+                        optimizer.ensure_model_downloaded(spec, status)
+
+        self.assertTrue(any(update["percent"] == 25.0 for update in progress_updates))
+        self.assertEqual(progress_updates[-1]["download_current_bytes"], 400)
+        self.assertEqual(progress_updates[-1]["download_total_bytes"], 400)
+        self.assertEqual(progress_updates[-1]["percent"], 100.0)
 
     def test_cached_model_status_does_not_say_downloading(self):
         spec = optimizer.resolve_model("qwen3_vl_4b_fast")
@@ -495,6 +670,161 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         with mock.patch.object(optimizer, "decode_image", return_value="image"):
             images = optimizer._qwen_context_images(segments, 1, False)
         self.assertEqual(images, [])
+
+    def test_llama_cpp_model_paths_resolve_exact_gguf_and_mmproj(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            model_dir = models_dir / spec.model_subdir
+            model_path = model_dir / "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            mmproj_path = model_dir / "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+            self._write_fake_gguf(model_path)
+            self._write_fake_gguf(mmproj_path, architecture="clip")
+            with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                resolved = optimizer._llama_cpp_model_paths(spec, model_dir)
+
+        self.assertEqual(resolved, (model_path, mmproj_path))
+
+    def test_llama_cpp_model_paths_missing_exact_file_reports_discovered_alternates(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            model_dir = models_dir / spec.model_subdir
+            alternate = model_dir / "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+            mmproj_path = model_dir / "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+            self._write_fake_gguf(alternate)
+            self._write_fake_gguf(mmproj_path, architecture="clip")
+            with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                with self.assertRaises(optimizer.PromptOptimizerError) as ctx:
+                    optimizer._llama_cpp_model_paths(spec, model_dir)
+
+        message = str(ctx.exception)
+        self.assertIn("missing the expected main model GGUF file", message)
+        self.assertIn("Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf", message)
+        self.assertIn("mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf", message)
+
+    def test_validate_gguf_file_rejects_invalid_magic_with_redownload_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "broken.gguf"
+            path.write_bytes(b"not-a-gguf")
+            with self.assertRaises(optimizer.PromptOptimizerError) as ctx:
+                optimizer.validate_gguf_file(path, "main model GGUF")
+
+        message = str(ctx.exception)
+        self.assertIn("not a valid GGUF file", message)
+        self.assertIn("download it again", message)
+
+    def test_load_llama_cpp_vision_uses_mmproj_file(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            model_dir = models_dir / spec.model_subdir
+            model_path = model_dir / "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            mmproj_path = model_dir / "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+            self._write_fake_gguf(model_path)
+            self._write_fake_gguf(mmproj_path, architecture="clip")
+            calls = {}
+
+            class FakeChatHandler:
+                def __init__(self, clip_model_path):
+                    calls["clip_model_path"] = clip_model_path
+
+            class FakeLlama:
+                def __init__(self, **kwargs):
+                    calls["llama_kwargs"] = kwargs
+
+            fake_llama_cpp = types.ModuleType("llama_cpp")
+            fake_llama_cpp.Llama = FakeLlama
+            fake_chat_format = types.ModuleType("llama_cpp.llama_chat_format")
+            fake_chat_format.Llava15ChatHandler = FakeChatHandler
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "llama_cpp": fake_llama_cpp,
+                    "llama_cpp.llama_chat_format": fake_chat_format,
+                },
+            ):
+                with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                    try:
+                        loaded = optimizer._load_llama_cpp_vision_model(spec, model_dir)
+                    finally:
+                        optimizer._LOADED_MODELS.pop(spec.alias, None)
+
+        self.assertEqual(calls["clip_model_path"], str(mmproj_path))
+        self.assertEqual(calls["llama_kwargs"]["model_path"], str(model_path))
+        self.assertEqual(loaded["mmproj_path"], mmproj_path)
+
+    def test_load_llama_cpp_vision_gemma4_failure_mentions_runtime_support(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp) / "models"
+            model_dir = models_dir / spec.model_subdir
+            model_path = model_dir / "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+            mmproj_path = model_dir / "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+            self._write_fake_gguf(model_path)
+            self._write_fake_gguf(mmproj_path, architecture="clip")
+
+            class FakeChatHandler:
+                def __init__(self, clip_model_path):
+                    self.clip_model_path = clip_model_path
+
+            class FakeLlama:
+                def __init__(self, **_kwargs):
+                    raise RuntimeError("Failed to load model from file")
+
+            fake_llama_cpp = types.ModuleType("llama_cpp")
+            fake_llama_cpp.Llama = FakeLlama
+            fake_chat_format = types.ModuleType("llama_cpp.llama_chat_format")
+            fake_chat_format.Llava15ChatHandler = FakeChatHandler
+            with mock.patch.dict(
+                sys.modules,
+                {
+                    "llama_cpp": fake_llama_cpp,
+                    "llama_cpp.llama_chat_format": fake_chat_format,
+                },
+            ):
+                with mock.patch.object(optimizer, "_models_dir", return_value=models_dir):
+                    with self.assertRaises(optimizer.PromptOptimizerError) as ctx:
+                        optimizer._load_llama_cpp_vision_model(spec, model_dir)
+
+        message = str(ctx.exception)
+        self.assertIn("Gemma 4/K_P", message)
+        self.assertIn("Upgrade or reinstall llama-cpp-python", message)
+        self.assertIn(str(model_path), message)
+
+    def test_generate_llama_cpp_vision_sends_image_data_url(self):
+        spec = optimizer.resolve_model("gemma4_e4b_uncensored_gguf_q8")
+        calls = {}
+
+        class FakeLlama:
+            def create_chat_completion(self, **kwargs):
+                calls.update(kwargs)
+                return {"choices": [{"message": {"content": "generated llama prompt"}}]}
+
+        image = Image.new("RGB", (4, 3), (255, 0, 0))
+        result = optimizer._generate_llama_cpp_vision(
+            spec,
+            Path("/tmp/model"),
+            [("Current", image)],
+            "Write a prompt",
+            loaded={"model": FakeLlama()},
+        )
+
+        self.assertEqual(result, "generated llama prompt")
+        content = calls["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "Current image:"})
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertEqual(content[-1], {"type": "text", "text": "Write a prompt"})
+
+    def test_gemma_safetensors_generation_reports_non_generator(self):
+        spec = optimizer.resolve_model("gemma4_e4b_it_fp8_scaled")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gemma4_e4b_it_fp8_scaled.safetensors"
+            path.write_text("fake", encoding="utf-8")
+            with self.assertRaises(optimizer.PromptOptimizerError) as ctx:
+                optimizer._generate_gemma_safetensors(spec, path, "Write a prompt")
+
+        self.assertIn("not a standalone prompt-generating optimizer model", str(ctx.exception))
 
     def test_optimize_qwen_cut_uses_current_image_only(self):
         calls = []
@@ -795,6 +1125,43 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertGreater(status["progress"]["percent"], 25.0)
         self.assertLess(status["progress"]["percent"], 50.0)
         self.assertGreater(status["progress"]["eta_seconds"], 0)
+
+    def test_download_status_preserves_reported_percent(self):
+        now = time.time()
+        job_id = "download-progress-test"
+        with optimizer._OPTIMIZER_JOBS_LOCK:
+            optimizer._OPTIMIZER_JOBS[job_id] = {
+                "job_id": job_id,
+                "state": "running",
+                "message": "Downloading model.gguf...",
+                "progress": optimizer._progress(
+                    1,
+                    2,
+                    phase="downloading",
+                    percent=42.5,
+                    download_current_bytes=425,
+                    download_total_bytes=1000,
+                    download_file="model.gguf",
+                    download_file_index=1,
+                    download_file_total=2,
+                ),
+                "results": [],
+                "error": "",
+                "created_at": now - 3,
+                "updated_at": now,
+                "prompt_durations": [],
+            }
+        try:
+            status = optimizer.get_optimizer_job_status(job_id)
+        finally:
+            with optimizer._OPTIMIZER_JOBS_LOCK:
+                optimizer._OPTIMIZER_JOBS.pop(job_id, None)
+
+        self.assertEqual(status["progress"]["phase"], "downloading")
+        self.assertEqual(status["progress"]["percent"], 42.5)
+        self.assertEqual(status["progress"]["download_current_bytes"], 425)
+        self.assertEqual(status["progress"]["download_total_bytes"], 1000)
+        self.assertFalse(status["progress"]["estimated"])
 
 
 if __name__ == "__main__":

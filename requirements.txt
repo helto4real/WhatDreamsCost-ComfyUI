@@ -4,3 +4,4 @@ accelerate
 qwen-vl-utils
 torchvision
 Pillow
+llama-cpp-python>=0.3.23

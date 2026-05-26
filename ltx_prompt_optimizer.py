@@ -11,9 +11,11 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 import threading
 import time
 from typing import Any
+from urllib.parse import unquote, urlparse
 import uuid
 
 from PIL import Image, ImageOps
@@ -34,6 +36,20 @@ except Exception:  # noqa: BLE001 - direct unit-test imports.
 
 QWEN_DEPS = ("transformers", "huggingface_hub", "accelerate", "qwen_vl_utils")
 FLORENCE_DEPS = ("transformers", "huggingface_hub", "accelerate", "torchvision")
+GEMMA_SAFETENSORS_DEPS = ("transformers", "huggingface_hub", "accelerate")
+LLAMA_CPP_DEPS = ("llama_cpp", "huggingface_hub")
+GEMMA4_E4B_FP8_URL = (
+    "https://huggingface.co/Comfy-Org/gemma-4/blob/main/"
+    "text_encoders/gemma4_e4b_it_fp8_scaled.safetensors"
+)
+GEMMA4_E4B_UNCENSORED_Q8_GGUF_URL = (
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf"
+)
+GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
+    "https://huggingface.co/HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive/blob/main/"
+    "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
+)
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
 SETTINGS_FILE = CONFIG_DIR / "ltx_prompt_optimizer_settings.json"
 TIMING_FILE = CONFIG_DIR / "ltx_prompt_optimizer_timing.json"
@@ -63,6 +79,15 @@ class OptimizerModelSpec:
     backend: str
     model_subdir: str
     dependencies: tuple[str, ...] = ()
+    file_urls: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OptimizerModelFile:
+    url: str
+    repo_id: str
+    revision: str
+    filename: str
 
 
 MODEL_REGISTRY: dict[str, OptimizerModelSpec] = {
@@ -108,6 +133,22 @@ MODEL_REGISTRY: dict[str, OptimizerModelSpec] = {
         "LLM",
         FLORENCE_DEPS,
     ),
+    "gemma4_e4b_it_fp8_scaled": OptimizerModelSpec(
+        "gemma4_e4b_it_fp8_scaled",
+        "Comfy-Org/gemma-4",
+        "gemma_safetensors",
+        "text_encoders",
+        GEMMA_SAFETENSORS_DEPS,
+        (GEMMA4_E4B_FP8_URL,),
+    ),
+    "gemma4_e4b_uncensored_gguf_q8": OptimizerModelSpec(
+        "gemma4_e4b_uncensored_gguf_q8",
+        "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+        "llama_cpp_vision",
+        "VLM/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+        LLAMA_CPP_DEPS,
+        (GEMMA4_E4B_UNCENSORED_Q8_GGUF_URL, GEMMA4_E4B_UNCENSORED_MMPROJ_URL),
+    ),
     "fallback_text_backend": OptimizerModelSpec(
         "fallback_text_backend",
         "local/fallback-text-backend",
@@ -132,6 +173,19 @@ def _noop_status(_message: str, _current: int | None = None, _total: int | None 
     return None
 
 
+def _emit_status(
+    status_cb: Any,
+    message: str,
+    current: int | None = None,
+    total: int | None = None,
+    progress: dict[str, Any] | None = None,
+) -> None:
+    try:
+        status_cb(message, current, total, progress)
+    except TypeError:
+        status_cb(message, current, total)
+
+
 def _progress(
     current: int | None = None,
     total: int | None = None,
@@ -141,8 +195,13 @@ def _progress(
     elapsed_seconds: float | None = None,
     prompt_elapsed_seconds: float | None = None,
     estimated: bool = False,
+    download_current_bytes: int | None = None,
+    download_total_bytes: int | None = None,
+    download_file: str | None = None,
+    download_file_index: int | None = None,
+    download_file_total: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "current": current,
         "total": total,
         "phase": phase,
@@ -152,6 +211,17 @@ def _progress(
         "prompt_elapsed_seconds": prompt_elapsed_seconds,
         "estimated": estimated,
     }
+    if download_current_bytes is not None:
+        payload["download_current_bytes"] = download_current_bytes
+    if download_total_bytes is not None:
+        payload["download_total_bytes"] = download_total_bytes
+    if download_file:
+        payload["download_file"] = download_file
+    if download_file_index is not None:
+        payload["download_file_index"] = download_file_index
+    if download_file_total is not None:
+        payload["download_file_total"] = download_file_total
+    return payload
 
 
 def settings_path(base_dir: str | os.PathLike[str] | None = None) -> Path:
@@ -358,10 +428,53 @@ def _models_dir() -> Path:
     return Path.cwd() / "models"
 
 
+def parse_hf_file_url(url: str) -> OptimizerModelFile:
+    parsed = urlparse(str(url or "").strip())
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    if parsed.netloc != "huggingface.co" or len(parts) < 5 or parts[2] != "blob":
+        raise PromptOptimizerError(f"Unsupported Hugging Face file URL: {url}")
+    repo_id = f"{parts[0]}/{parts[1]}"
+    revision = parts[3]
+    filename = "/".join(parts[4:])
+    if not filename:
+        raise PromptOptimizerError(f"Hugging Face file URL is missing a filename: {url}")
+    return OptimizerModelFile(url=url, repo_id=repo_id, revision=revision, filename=filename)
+
+
+def model_files_for(spec: OptimizerModelSpec) -> list[OptimizerModelFile]:
+    return [parse_hf_file_url(url) for url in spec.file_urls]
+
+
+def model_file_path_for(spec: OptimizerModelSpec, model_file: OptimizerModelFile) -> Path:
+    if spec.backend == "gemma_safetensors":
+        return _models_dir() / model_file.filename
+    base = _models_dir() / spec.model_subdir
+    return base / model_file.filename
+
+
+def model_file_paths_for(spec: OptimizerModelSpec) -> list[Path]:
+    return [model_file_path_for(spec, model_file) for model_file in model_files_for(spec)]
+
+
 def model_path_for(spec: OptimizerModelSpec) -> Path | None:
     if spec.backend == "fallback":
         return None
+    if spec.file_urls:
+        paths = model_file_paths_for(spec)
+        if spec.backend == "gemma_safetensors":
+            return paths[0] if paths else None
+        return _models_dir() / spec.model_subdir
     return _models_dir() / spec.model_subdir / spec.repo_id.rsplit("/", 1)[-1]
+
+
+def model_downloaded(spec: OptimizerModelSpec) -> bool:
+    if spec.backend == "fallback":
+        return True
+    if spec.file_urls:
+        paths = model_file_paths_for(spec)
+        return bool(paths) and all(path.exists() for path in paths)
+    path = model_path_for(spec)
+    return bool(path and path.exists())
 
 
 def missing_dependencies(spec: OptimizerModelSpec) -> list[str]:
@@ -380,7 +493,7 @@ def get_model_statuses() -> dict[str, Any]:
     for spec in MODEL_REGISTRY.values():
         path = model_path_for(spec)
         missing = missing_dependencies(spec)
-        downloaded = bool(path and path.exists())
+        downloaded = model_downloaded(spec)
         if spec.backend == "fallback":
             status = "ready"
         elif missing:
@@ -396,6 +509,8 @@ def get_model_statuses() -> dict[str, Any]:
                 "backend": spec.backend,
                 "downloaded": downloaded,
                 "local_path": str(path) if path else "",
+                "file_urls": list(spec.file_urls),
+                "local_files": [str(file_path) for file_path in model_file_paths_for(spec)] if spec.file_urls else [],
                 "missing_dependencies": missing,
                 "status": status,
             }
@@ -480,6 +595,242 @@ def prompt_optimizer_vram_preflight(status_cb: Any = None) -> dict[str, Any]:
     return {"ok": True, "actions": actions}
 
 
+class DownloadProgressReporter:
+    def __init__(
+        self,
+        status_cb: Any,
+        total_bytes: int | None = None,
+        completed_bytes: int = 0,
+        units: str = "bytes",
+    ) -> None:
+        self.status_cb = status_cb or _noop_status
+        self.total_bytes = int(total_bytes) if total_bytes and total_bytes > 0 else None
+        self.completed_bytes = max(0, int(completed_bytes or 0))
+        self.units = units
+        self.current_file = ""
+        self.current_file_index = 1
+        self.current_file_total = 1
+        self.current_file_bytes = 0
+        self.current_file_total_bytes: int | None = None
+
+    def begin_file(
+        self,
+        file_name: str,
+        file_index: int = 1,
+        file_total: int = 1,
+        file_total_bytes: int | None = None,
+    ) -> None:
+        self.current_file = file_name
+        self.current_file_index = max(1, int(file_index or 1))
+        self.current_file_total = max(1, int(file_total or 1))
+        self.current_file_bytes = 0
+        self.current_file_total_bytes = int(file_total_bytes) if file_total_bytes and file_total_bytes > 0 else None
+        self.emit()
+
+    def update(self, value: int, total: int | None = None) -> None:
+        self.current_file_bytes = max(0, int(value or 0))
+        if total and total > 0:
+            self.current_file_total_bytes = int(total)
+            if self.total_bytes is None and self.current_file_total == 1 and self.units == "bytes":
+                self.total_bytes = int(total)
+        self.emit()
+
+    def finish_file(self) -> None:
+        completed = self.current_file_bytes
+        if self.current_file_total_bytes:
+            completed = max(completed, self.current_file_total_bytes)
+        self.completed_bytes += max(0, int(completed or 0))
+        self.current_file_bytes = 0
+        self.current_file_total_bytes = None
+
+    def mark_cached(
+        self,
+        file_name: str,
+        file_index: int,
+        file_total: int,
+        file_total_bytes: int | None = None,
+    ) -> None:
+        self.begin_file(file_name, file_index, file_total, file_total_bytes)
+        self.current_file_bytes = max(0, int(file_total_bytes or 0))
+        self.emit()
+        self.finish_file()
+
+    def progress_payload(self) -> dict[str, Any]:
+        current_total = self.completed_bytes + self.current_file_bytes
+        payload: dict[str, Any] = {
+            "download_file": self.current_file,
+            "download_file_index": self.current_file_index,
+            "download_file_total": self.current_file_total,
+            "estimated": False,
+        }
+        if self.total_bytes and self.units == "bytes":
+            payload.update(
+                {
+                    "download_current_bytes": min(current_total, self.total_bytes),
+                    "download_total_bytes": self.total_bytes,
+                    "percent": (min(current_total, self.total_bytes) / self.total_bytes) * 100.0,
+                }
+            )
+        elif self.current_file_total_bytes:
+            payload["percent"] = min(100.0, (self.current_file_bytes / self.current_file_total_bytes) * 100.0)
+        return payload
+
+    def emit(self) -> None:
+        label = self.current_file or "model files"
+        _emit_status(
+            self.status_cb,
+            f"Downloading {label}...",
+            self.current_file_index,
+            self.current_file_total,
+            self.progress_payload(),
+        )
+
+    def tqdm_class(
+        self,
+        file_name: str,
+        file_index: int = 1,
+        file_total: int = 1,
+        file_total_bytes: int | None = None,
+    ) -> type:
+        reporter = self
+
+        class DownloadProgressBar:
+            def __init__(self, iterable=None, total=None, desc=None, **_kwargs):
+                self.iterable = iterable
+                self.total = int(total) if total and total > 0 else file_total_bytes
+                self.n = 0
+                self.closed = False
+                reporter.begin_file(str(desc or file_name), file_index, file_total, self.total)
+
+            def update(self, n=1):
+                self.n += int(n or 0)
+                reporter.update(self.n, self.total)
+
+            def close(self):
+                if self.closed:
+                    return
+                self.closed = True
+                reporter.finish_file()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+                return False
+
+            def __iter__(self):
+                if self.iterable is None:
+                    return iter(())
+                for item in self.iterable:
+                    yield item
+                    self.update(1)
+
+            def set_description(self, desc=None, refresh=True):
+                if desc:
+                    reporter.current_file = str(desc)
+                if refresh:
+                    reporter.emit()
+
+            def set_postfix(self, *args, **kwargs):
+                return None
+
+            def refresh(self):
+                reporter.emit()
+
+        return DownloadProgressBar
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _exact_file_sizes(files: list[OptimizerModelFile], paths: list[Path]) -> list[int | None]:
+    token = hf_auth_token()
+    sizes: list[int | None] = []
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+    except Exception:
+        get_hf_file_metadata = None
+        hf_hub_url = None
+    for model_file, path in zip(files, paths, strict=True):
+        if path.exists():
+            sizes.append(_safe_int(path.stat().st_size))
+            continue
+        size = None
+        if get_hf_file_metadata is not None and hf_hub_url is not None:
+            try:
+                url = hf_hub_url(model_file.repo_id, model_file.filename, revision=model_file.revision)
+                size = _safe_int(getattr(get_hf_file_metadata(url, token=token), "size", None))
+            except Exception:
+                size = None
+        sizes.append(size)
+    return sizes
+
+
+def _verify_downloaded_file(spec: OptimizerModelSpec, model_file: OptimizerModelFile, target_path: Path, downloaded: Any) -> None:
+    downloaded_path = Path(downloaded) if downloaded else target_path
+    candidate = downloaded_path if downloaded_path.exists() else target_path
+    if not candidate.exists():
+        raise PromptOptimizerError(
+            f"Downloaded '{model_file.url}' but could not find expected file at {target_path}"
+        )
+    if candidate.stat().st_size <= 0:
+        raise PromptOptimizerError(
+            f"Downloaded '{model_file.url}' to {candidate}, but the file is empty. Delete it and try the download again."
+        )
+    if spec.backend == "llama_cpp_vision" and candidate.suffix.lower() == ".gguf":
+        validate_gguf_file(candidate, model_file.filename)
+
+
+def _download_exact_model_files(
+    spec: OptimizerModelSpec,
+    status_cb: Any = None,
+) -> Path | None:
+    status = status_cb or _noop_status
+    files = model_files_for(spec)
+    paths = model_file_paths_for(spec)
+    path = model_path_for(spec)
+    if paths and all(file_path.exists() for file_path in paths):
+        status(f"Using cached model at {path}")
+        return path
+
+    from huggingface_hub import hf_hub_download
+
+    sizes = _exact_file_sizes(files, paths)
+    total_bytes = sum(size for size in sizes if size is not None) if all(size is not None for size in sizes) else None
+    reporter = DownloadProgressReporter(status, total_bytes=total_bytes, units="bytes")
+    file_total = len(files)
+    for index, (model_file, target_path, size) in enumerate(zip(files, paths, sizes, strict=True), start=1):
+        if target_path.exists():
+            reporter.mark_cached(model_file.filename, index, file_total, size)
+            status(f"Using cached model file at {target_path}")
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        local_dir = _models_dir() if spec.backend == "gemma_safetensors" else (_models_dir() / spec.model_subdir)
+        local_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            status(f"Downloading {model_file.url} into {target_path}")
+            downloaded_path = hf_hub_download(
+                repo_id=model_file.repo_id,
+                filename=model_file.filename,
+                revision=model_file.revision,
+                local_dir=str(local_dir),
+                local_dir_use_symlinks=False,
+                token=hf_auth_token(),
+                tqdm_class=reporter.tqdm_class(model_file.filename, index, file_total, size),
+            )
+        except Exception as exc:  # noqa: BLE001 - Hugging Face raises several HTTP wrapper types.
+            raise _download_error(spec, exc) from exc
+        _verify_downloaded_file(spec, model_file, target_path, downloaded_path)
+    status(f"Downloaded model into {path}")
+    return path
+
+
 def ensure_model_downloaded(
     spec: OptimizerModelSpec,
     status_cb: Any = None,
@@ -489,7 +840,7 @@ def ensure_model_downloaded(
     if path is None:
         return None
     status("Checking optional dependencies...")
-    if path.exists():
+    if model_downloaded(spec):
         status(f"Using cached model at {path}")
         return path
     missing = missing_dependencies(spec)
@@ -497,12 +848,21 @@ def ensure_model_downloaded(
         raise PromptOptimizerError(
             f"Model '{spec.alias}' requires optional packages: {', '.join(missing)}"
         )
+    if spec.file_urls:
+        return _download_exact_model_files(spec, status)
     from huggingface_hub import snapshot_download
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    reporter = DownloadProgressReporter(status, units="items")
     try:
         status(f"Downloading {spec.repo_id} into {path}")
-        snapshot_download(repo_id=spec.repo_id, local_dir=str(path), local_dir_use_symlinks=False, token=hf_auth_token())
+        snapshot_download(
+            repo_id=spec.repo_id,
+            local_dir=str(path),
+            local_dir_use_symlinks=False,
+            token=hf_auth_token(),
+            tqdm_class=reporter.tqdm_class(spec.repo_id),
+        )
     except Exception as exc:  # noqa: BLE001 - Hugging Face raises several HTTP wrapper types.
         raise _download_error(spec, exc) from exc
     status(f"Downloaded model into {path}")
@@ -822,6 +1182,257 @@ def _generate_florence(
     return processor.batch_decode(outputs, skip_special_tokens=True)[0]
 
 
+GGUF_MAGIC = b"GGUF"
+_GGUF_VALUE_SIZES = {
+    0: 1,
+    1: 1,
+    2: 2,
+    3: 2,
+    4: 4,
+    5: 4,
+    6: 4,
+    7: 1,
+    10: 8,
+    11: 8,
+    12: 8,
+}
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
+
+
+def _read_gguf_u32(data: bytes, offset: int) -> tuple[int, int]:
+    return struct.unpack_from("<I", data, offset)[0], offset + 4
+
+
+def _read_gguf_u64(data: bytes, offset: int) -> tuple[int, int]:
+    return struct.unpack_from("<Q", data, offset)[0], offset + 8
+
+
+def _read_gguf_string(data: bytes, offset: int) -> tuple[str, int]:
+    length, offset = _read_gguf_u64(data, offset)
+    end = offset + length
+    if end > len(data):
+        raise ValueError("string extends past GGUF metadata buffer")
+    return data[offset:end].decode("utf-8", errors="replace"), end
+
+
+def _skip_gguf_value(data: bytes, offset: int, value_type: int) -> int:
+    if value_type == _GGUF_TYPE_STRING:
+        _, offset = _read_gguf_string(data, offset)
+        return offset
+    if value_type == _GGUF_TYPE_ARRAY:
+        item_type, offset = _read_gguf_u32(data, offset)
+        count, offset = _read_gguf_u64(data, offset)
+        if item_type == _GGUF_TYPE_STRING:
+            for _ in range(count):
+                _, offset = _read_gguf_string(data, offset)
+            return offset
+        item_size = _GGUF_VALUE_SIZES.get(item_type)
+        if item_size is None:
+            raise ValueError(f"unsupported GGUF array item type {item_type}")
+        return offset + (count * item_size)
+    value_size = _GGUF_VALUE_SIZES.get(value_type)
+    if value_size is None:
+        raise ValueError(f"unsupported GGUF value type {value_type}")
+    return offset + value_size
+
+
+def gguf_architecture(path: Path) -> str:
+    try:
+        data = Path(path).read_bytes()[:1024 * 1024]
+        if len(data) < 24 or data[:4] != GGUF_MAGIC:
+            return ""
+        offset = 4
+        _version, offset = _read_gguf_u32(data, offset)
+        _tensor_count, offset = _read_gguf_u64(data, offset)
+        kv_count, offset = _read_gguf_u64(data, offset)
+        for _ in range(min(kv_count, 256)):
+            key, offset = _read_gguf_string(data, offset)
+            value_type, offset = _read_gguf_u32(data, offset)
+            if key == "general.architecture" and value_type == _GGUF_TYPE_STRING:
+                value, _offset = _read_gguf_string(data, offset)
+                return clean_prompt_text(value)
+            offset = _skip_gguf_value(data, offset, value_type)
+            if offset >= len(data):
+                break
+    except Exception:
+        return ""
+    return ""
+
+
+def validate_gguf_file(path: Path, label: str = "GGUF file") -> dict[str, Any]:
+    path = Path(path)
+    if not path.exists():
+        raise PromptOptimizerError(f"Missing {label}: expected {path}")
+    if not path.is_file():
+        raise PromptOptimizerError(f"Invalid {label}: expected a file at {path}")
+    if path.stat().st_size <= 0:
+        raise PromptOptimizerError(f"Invalid {label}: {path} is empty. Delete it and try the download again.")
+    with path.open("rb") as handle:
+        magic = handle.read(4)
+    if magic != GGUF_MAGIC:
+        raise PromptOptimizerError(
+            f"Invalid {label}: {path} is not a valid GGUF file. Delete it and download it again."
+        )
+    return {"architecture": gguf_architecture(path)}
+
+
+def _image_data_url(image: Image.Image) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def _discover_gguf_files(path: Path) -> list[Path]:
+    search_dir = path if path.is_dir() else path.parent
+    if not search_dir.exists():
+        return []
+    return sorted(candidate for candidate in search_dir.glob("*.gguf") if candidate.is_file())
+
+
+def _format_discovered_files(files: list[Path]) -> str:
+    if not files:
+        return "No .gguf files were found in the model directory."
+    return "Found: " + ", ".join(file.name for file in files)
+
+
+def _expected_llama_cpp_paths(spec: OptimizerModelSpec) -> tuple[Path | None, Path | None]:
+    paths = model_file_paths_for(spec)
+    model_path = next(
+        (file_path for file_path in paths if file_path.suffix.lower() == ".gguf" and "mmproj" not in file_path.name.lower()),
+        None,
+    )
+    mmproj_path = next((file_path for file_path in paths if "mmproj" in file_path.name.lower()), None)
+    return model_path, mmproj_path
+
+
+def _missing_llama_cpp_file_error(
+    spec: OptimizerModelSpec,
+    role: str,
+    expected_path: Path | None,
+    discovered: list[Path],
+) -> PromptOptimizerError:
+    expected = str(expected_path) if expected_path is not None else "unknown"
+    return PromptOptimizerError(
+        f"Model '{spec.alias}' is missing the expected {role} GGUF file at {expected}. "
+        f"{_format_discovered_files(discovered)} Delete the incomplete model folder and try Generate again."
+    )
+
+
+def _llama_cpp_model_paths(spec: OptimizerModelSpec, path: Path) -> tuple[Path, Path]:
+    expected_model_path, expected_mmproj_path = _expected_llama_cpp_paths(spec)
+    discovered = _discover_gguf_files(path)
+    discovered_model_path = next((file_path for file_path in discovered if "mmproj" not in file_path.name.lower()), None)
+    discovered_mmproj_path = next((file_path for file_path in discovered if "mmproj" in file_path.name.lower()), None)
+
+    model_path = expected_model_path if expected_model_path is not None and expected_model_path.exists() else None
+    mmproj_path = expected_mmproj_path if expected_mmproj_path is not None and expected_mmproj_path.exists() else None
+    if model_path is None and expected_model_path is None and discovered_model_path is not None:
+        model_path = discovered_model_path
+    if mmproj_path is None and expected_mmproj_path is None and discovered_mmproj_path is not None:
+        mmproj_path = discovered_mmproj_path
+    if model_path is None:
+        raise _missing_llama_cpp_file_error(spec, "main model", expected_model_path, discovered)
+    if mmproj_path is None:
+        raise _missing_llama_cpp_file_error(spec, "mmproj", expected_mmproj_path, discovered)
+
+    validate_gguf_file(model_path, "main model GGUF")
+    validate_gguf_file(mmproj_path, "mmproj GGUF")
+    return model_path, mmproj_path
+
+
+def _load_llama_cpp_vision_model(spec: OptimizerModelSpec, path: Path, status_cb: Any = None) -> dict[str, Any]:
+    status = status_cb or _noop_status
+    cache_key = spec.alias
+    if cache_key in _LOADED_MODELS:
+        status(f"Using loaded llama.cpp model '{spec.alias}'.")
+        return _LOADED_MODELS[cache_key]
+    model_path, mmproj_path = _llama_cpp_model_paths(spec, path)
+    status(f"Loading llama.cpp model from {model_path} with {mmproj_path}...")
+    try:
+        from llama_cpp import Llama
+        from llama_cpp.llama_chat_format import Llava15ChatHandler
+    except Exception as exc:  # noqa: BLE001
+        raise PromptOptimizerError(
+            "Model 'gemma4_e4b_uncensored_gguf_q8' requires optional package: llama-cpp-python"
+        ) from exc
+
+    try:
+        chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
+        model = Llama(
+            model_path=str(model_path),
+            chat_handler=chat_handler,
+            n_ctx=8192,
+            n_gpu_layers=-1,
+            verbose=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        architecture = gguf_architecture(model_path)
+        compatibility_hint = ""
+        if architecture == "gemma4" or "_K_P" in model_path.name:
+            compatibility_hint = (
+                " The file appears to be a valid Gemma 4/K_P GGUF, so this usually means the installed "
+                "llama-cpp-python/llama.cpp runtime is too old or was built without Gemma 4/K_P support. "
+                "Upgrade or reinstall llama-cpp-python, then try again."
+            )
+        raise PromptOptimizerError(
+            f"Could not load llama.cpp optimizer model '{spec.alias}' from {model_path}: {exc}.{compatibility_hint}"
+        ) from exc
+    loaded = {"model": model, "chat_handler": chat_handler, "mmproj_path": mmproj_path, "model_path": model_path}
+    _LOADED_MODELS[cache_key] = loaded
+    status(f"Loaded llama.cpp model '{spec.alias}'.")
+    return loaded
+
+
+def _generate_llama_cpp_vision(
+    spec: OptimizerModelSpec,
+    path: Path,
+    images: list[tuple[str, Image.Image]],
+    instruction: str,
+    status_cb: Any = None,
+    loaded: dict[str, Any] | None = None,
+) -> str:
+    loaded = loaded or _load_llama_cpp_vision_model(spec, path, status_cb)
+    model = loaded["model"]
+    content: list[dict[str, Any]] = []
+    for label, image in images:
+        content.append({"type": "text", "text": f"{label} image:"})
+        content.append({"type": "image_url", "image_url": {"url": _image_data_url(image)}})
+    content.append({"type": "text", "text": instruction})
+    response = model.create_chat_completion(
+        messages=[{"role": "user", "content": content}],
+        max_tokens=180,
+        temperature=0.2,
+        top_p=0.95,
+    )
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict):
+                return str(message.get("content") or "")
+            return str(first.get("text") or "")
+    return str(response or "")
+
+
+def _generate_gemma_safetensors(
+    spec: OptimizerModelSpec,
+    path: Path,
+    instruction: str,
+    _status_cb: Any = None,
+) -> str:
+    if not path.exists():
+        raise PromptOptimizerError(f"Downloaded Gemma safetensors file is missing at {path}")
+    raise PromptOptimizerError(
+        f"Model '{spec.alias}' downloaded the exact Comfy-Org safetensors file, but this file is a ComfyUI "
+        "text-encoder checkpoint and is not a standalone prompt-generating optimizer model in the installed "
+        "runtime. Use a GGUF/Transformers prompt optimizer model for generation, or provide a compatible "
+        "generator config/tokenizer for this exact checkpoint."
+    )
+
+
 def _neighbor_segment(segments: list[Any], index: int, offset: int) -> dict[str, Any] | None:
     neighbor_index = index + offset
     if 0 <= neighbor_index < len(segments) and isinstance(segments[neighbor_index], dict):
@@ -968,6 +1579,15 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
                 loaded = _load_florence_model(spec, path, status)  # type: ignore[arg-type]
                 status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
                 optimized = _generate_florence(spec, path, image, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
+            elif spec.backend == "llama_cpp_vision":
+                images = _qwen_context_images(segments, index, not cut)
+                prompt_optimizer_vram_preflight(status)
+                loaded = _load_llama_cpp_vision_model(spec, path, status)  # type: ignore[arg-type]
+                status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
+                optimized = _generate_llama_cpp_vision(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
+            elif spec.backend == "gemma_safetensors":
+                status(f"Generating prompt {generated_count} of {selected_total}...", generated_count, selected_total)
+                optimized = _generate_gemma_safetensors(spec, path, instruction, _noop_status)  # type: ignore[arg-type]
             else:
                 raise PromptOptimizerError(f"Unsupported optimizer backend: {spec.backend}")
             status(f"Completed prompt {generated_count} of {selected_total}.", generated_count, selected_total)
@@ -1041,6 +1661,9 @@ def _estimated_job_progress(job: dict[str, Any], now: float | None = None) -> di
         eta_seconds = 0.0
         estimated = False
         phase = "completed"
+    elif phase == "downloading":
+        eta_seconds = None
+        estimated = False
     elif isinstance(current, int) and isinstance(total, int) and total > 0:
         average = _job_average_seconds(job)
         completed = max(0, min(total, current - 1))
@@ -1091,7 +1714,13 @@ def _job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _set_job_status(job_id: str, message: str, current: int | None = None, total: int | None = None) -> None:
+def _set_job_status(
+    job_id: str,
+    message: str,
+    current: int | None = None,
+    total: int | None = None,
+    progress_details: dict[str, Any] | None = None,
+) -> None:
     now = time.time()
     with _OPTIMIZER_JOBS_LOCK:
         job = _OPTIMIZER_JOBS.get(job_id)
@@ -1113,7 +1742,11 @@ def _set_job_status(job_id: str, message: str, current: int | None = None, total
             job["completed_prompts"] = current
             job["prompt_started_at"] = None
         job["message"] = message
-        job["progress"] = _progress(current, total, phase=phase)
+        progress = _progress(current, total, phase=phase)
+        if isinstance(progress_details, dict):
+            progress.update(progress_details)
+            progress["phase"] = phase
+        job["progress"] = progress
         job["updated_at"] = now
 
 
@@ -1156,7 +1789,12 @@ def _run_optimizer_job(job_id: str, payload: dict[str, Any]) -> None:
             job["profile_average_seconds"] = profile_average
             job["updated_at"] = time.time()
     try:
-        result = optimize_segments(payload, lambda message, current=None, total=None: _set_job_status(job_id, message, current, total))
+        result = optimize_segments(
+            payload,
+            lambda message, current=None, total=None, progress=None: _set_job_status(
+                job_id, message, current, total, progress
+            ),
+        )
         with _OPTIMIZER_JOBS_LOCK:
             job = _OPTIMIZER_JOBS.get(job_id)
             if job:

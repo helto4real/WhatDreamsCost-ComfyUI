@@ -2914,6 +2914,19 @@ class TimelineEditor {
       if (value < 60) return `about ${Math.ceil(value)}s left`;
       return `about ${Math.ceil(value / 60)}m left`;
     };
+    const formatBytes = (bytes) => {
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value <= 0) return "";
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let scaled = value;
+      let unitIndex = 0;
+      while (scaled >= 1024 && unitIndex < units.length - 1) {
+        scaled /= 1024;
+        unitIndex += 1;
+      }
+      const decimals = scaled >= 10 || unitIndex === 0 ? 0 : 1;
+      return `${scaled.toFixed(decimals)} ${units[unitIndex]}`;
+    };
     const updateProgressBar = (progress = {}, visible = true) => {
       const percentValue = Number(progress.percent);
       const percent = Number.isFinite(percentValue) ? Math.max(0, Math.min(100, percentValue)) : 0;
@@ -2925,6 +2938,14 @@ class TimelineEditor {
       const eta = formatEta(progress.eta_seconds);
       if (eta) parts.push(eta);
       if (progress.estimated && progress.phase === "generating") parts.push("estimated");
+      if (progress.phase === "downloading") {
+        const currentBytes = formatBytes(progress.download_current_bytes);
+        const totalBytes = formatBytes(progress.download_total_bytes);
+        if (currentBytes && totalBytes) parts.push(`${currentBytes} / ${totalBytes}`);
+        if (progress.download_file_index && progress.download_file_total) {
+          parts.push(`file ${progress.download_file_index}/${progress.download_file_total}`);
+        }
+      }
       progressText.textContent = parts.join(" · ");
     };
     const markLoadedModel = (alias) => {
