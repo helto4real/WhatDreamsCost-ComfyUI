@@ -1458,6 +1458,7 @@ class TimelineEditor {
     this._hoveredGapIdx = -1;
     this._isHovering = false;
     this._isNodeHovering = false;
+    this._promptOptimizerActive = false;
 
     // Playback state
     this.currentFrame = 0;
@@ -1595,6 +1596,7 @@ class TimelineEditor {
   destroy() {
     cancelAnimationFrame(this._renderLoop);
     this.pauseAudio();
+    this.setPromptOptimizerActive(false);
     this.closePromptOptimizer();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
@@ -1798,7 +1800,16 @@ class TimelineEditor {
   }
 
   shouldHideTimelineImagesPrompts() {
-    return this.hideTimelineImagesPromptsEnabled() && !this._isNodeHovering;
+    return this.hideTimelineImagesPromptsEnabled() && (!this._isNodeHovering || this._promptOptimizerActive);
+  }
+
+  setPromptOptimizerActive(active) {
+    const isActive = !!active;
+    if (this._promptOptimizerActive === isActive) return;
+    this._promptOptimizerActive = isActive;
+    this.updatePromptPrivacyVisibility();
+    this.render();
+    if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
   }
 
   setElementTextPrivacy(element, shouldHide) {
@@ -2729,6 +2740,7 @@ class TimelineEditor {
       this.unloadPromptOptimizerModel(dialog.dataset.loadedModelAlias || "");
     }
     dialog?.remove();
+    this.setPromptOptimizerActive(false);
   }
 
   async segmentImageDataUrl(seg) {
@@ -2831,6 +2843,7 @@ class TimelineEditor {
 
   showPromptOptimizer() {
     this.closePromptOptimizer();
+    this.setPromptOptimizerActive(true);
 
     const rows = this.getPromptOptimizerSegments();
     const overlay = document.createElement("div");
