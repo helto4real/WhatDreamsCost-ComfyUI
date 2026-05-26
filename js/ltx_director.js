@@ -1457,7 +1457,7 @@ class TimelineEditor {
     this._lastWidth = 0;
     this._hoveredGapIdx = -1;
     this._isHovering = false;
-    this._isNodeHovering = false;
+    this._isRevealAreaHovering = false;
     this._promptOptimizerActive = false;
 
     // Playback state
@@ -1600,7 +1600,7 @@ class TimelineEditor {
     this.closePromptOptimizer();
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
-    if (this.handleNodeHoverMouseMove) window.removeEventListener("mousemove", this.handleNodeHoverMouseMove, true);
+    if (this.handleRevealAreaMouseMove) window.removeEventListener("mousemove", this.handleRevealAreaMouseMove, true);
   }
 
   getDurationFrames() {
@@ -1800,7 +1800,7 @@ class TimelineEditor {
   }
 
   shouldHideTimelineImagesPrompts() {
-    return this.hideTimelineImagesPromptsEnabled() && (!this._isNodeHovering || this._promptOptimizerActive);
+    return this.hideTimelineImagesPromptsEnabled() && (!this._isRevealAreaHovering || this._promptOptimizerActive);
   }
 
   setPromptOptimizerActive(active) {
@@ -1888,46 +1888,39 @@ class TimelineEditor {
     }
   }
 
-  eventToGraphPos(e) {
-    const canvas = window.app?.canvas;
-    if (canvas?.convertEventToCanvasOffset) {
-      try {
-        const pos = canvas.convertEventToCanvasOffset(e);
-        if (Array.isArray(pos)) return pos;
-      } catch (err) { }
-    }
-
-    const canvasEl = canvas?.canvas;
-    const rect = canvasEl?.getBoundingClientRect?.();
-    const ds = canvas?.ds;
-    if (!rect || !ds) return null;
-
-    const scale = ds.scale || 1;
-    const offset = ds.offset || [0, 0];
-    return [
-      (e.clientX - rect.left) / scale - offset[0],
-      (e.clientY - rect.top) / scale - offset[1],
-    ];
+  isEventInsideRevealArea(e) {
+    if (this.toolbar?.contains?.(e.target)) return false;
+    const wrapperRect = this.wrapper?.getBoundingClientRect?.();
+    const toolbarRect = this.toolbar?.getBoundingClientRect?.();
+    if (!wrapperRect || !toolbarRect) return false;
+    const revealTop = toolbarRect.bottom;
+    return e.clientX >= wrapperRect.left
+      && e.clientX <= wrapperRect.right
+      && e.clientY >= revealTop
+      && e.clientY <= wrapperRect.bottom;
   }
 
-  isEventInsideNode(e) {
-    const pos = this.eventToGraphPos(e);
-    if (!pos || !this.node?.pos || !this.node?.size) return true;
-
-    const [x, y] = pos;
-    const [nodeX, nodeY] = this.node.pos;
-    const [nodeW, nodeH] = this.node.size;
-    return x >= nodeX && x <= nodeX + nodeW && y >= nodeY && y <= nodeY + nodeH;
+  isRevealAreaElementHovered() {
+    return !!(
+      this.viewport?.matches?.(":hover")
+      || this.controlsGroup?.matches?.(":hover")
+      || this.propContainer?.matches?.(":hover")
+      || this.privacyStatusEl?.matches?.(":hover")
+    );
   }
 
-  updateNodeHoverState(e) {
-    const isHovering = this.isEventInsideNode(e);
-    if (this._isNodeHovering === isHovering) return;
-    this._isNodeHovering = isHovering;
+  setRevealAreaHovering(isHovering) {
+    const hovering = !!isHovering;
+    if (this._isRevealAreaHovering === hovering) return;
+    this._isRevealAreaHovering = hovering;
     if (this.hideTimelineImagesPromptsEnabled()) {
       this.updatePromptPrivacyVisibility();
       this.render();
     }
+  }
+
+  updateRevealAreaHoverState(e) {
+    this.setRevealAreaHovering(this.isEventInsideRevealArea(e));
   }
 
   // Grow the timeline duration to fit `requiredFrames` if it is currently shorter.
@@ -2020,26 +2013,19 @@ class TimelineEditor {
 
     this.wrapper.addEventListener("mouseenter", () => {
       this._isHovering = true;
-      if (!this._isNodeHovering) {
-        this._isNodeHovering = true;
-        if (this.hideTimelineImagesPromptsEnabled()) {
-          this.updatePromptPrivacyVisibility();
-          this.render();
-        }
-      }
+      this.setRevealAreaHovering(this.isRevealAreaElementHovered());
     });
-    this.wrapper.addEventListener("mouseleave", () => { this._isHovering = false; });
+    this.wrapper.addEventListener("mouseleave", () => {
+      this._isHovering = false;
+      this.setRevealAreaHovering(false);
+    });
 
-    this.handleNodeHoverMouseMove = (e) => this.updateNodeHoverState(e);
-    window.addEventListener("mousemove", this.handleNodeHoverMouseMove, true);
+    this.handleRevealAreaMouseMove = (e) => this.updateRevealAreaHoverState(e);
+    window.addEventListener("mousemove", this.handleRevealAreaMouseMove, true);
 
     requestAnimationFrame(() => {
       if (!this.wrapper) return;
-      this._isNodeHovering = this.wrapper.matches(":hover");
-      if (this.hideTimelineImagesPromptsEnabled()) {
-        this.updatePromptPrivacyVisibility();
-        this.render();
-      }
+      this.setRevealAreaHovering(this.isRevealAreaElementHovered());
     });
 
     this.handleKeyDown = (e) => {
@@ -2086,6 +2072,7 @@ class TimelineEditor {
     // --- Toolbar ---
     const toolbar = document.createElement("div");
     toolbar.className = "pr-toolbar";
+    this.toolbar = toolbar;
 
     const actionGroup = document.createElement("div");
     actionGroup.className = "pr-actions";
@@ -2312,6 +2299,7 @@ class TimelineEditor {
     // --- Content Area Container ---
     const propContainer = document.createElement("div");
     propContainer.className = "pr-prop-container";
+    this.propContainer = propContainer;
 
     // --- Text Area (Image/Text) ---
     this.promptInput = document.createElement("textarea");
@@ -2643,6 +2631,7 @@ class TimelineEditor {
 
     const controlsGroup = document.createElement("div");
     controlsGroup.className = "pr-controls-group";
+    this.controlsGroup = controlsGroup;
     controlsGroup.appendChild(this.strengthRow);
     controlsGroup.appendChild(playerControls);
     this.wrapper.appendChild(controlsGroup);
