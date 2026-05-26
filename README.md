@@ -221,15 +221,7 @@ Please note that due to ComfyUI limitations (and the fact that this node doesn't
 An upgraded Load Audio node. Features a simple interface to easily trim audio. Also allows dragging and dropping files (fixes the original node that doesn't allow dropping in videos). Also compatible with nodes 2.0.
 
 # 💡 Workflows
-<img width="3120" height="990" alt="LTX I2V First Last Frame 3 Stage Workflow v6" src="https://github.com/user-attachments/assets/c993ef2f-ac4b-4091-a7f6-5ff1674c3718" />
-<br>
-<br>
-This is a compact LTX 2.3 workflow for I2V and First Frame, Middle Frame, Last frame video generation.
-I seperated and organized everything into subraphs to make things as clean as possible, and added toggles to customize the workflow quickly.
-
 Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
-
-Or drag and drop the image into ComfyUI to import workflow.
 
 # ❗ Known Issues
 
@@ -237,6 +229,6 @@ Fixed everything so far. If there are any other issue or bugs you find please le
 
 # 💡 Additional Info
 
-I made these nodes knowing little about python and a beginner level understanding of javascript. Feel free to suggest improvements, and if you run into any bugs let me know.
+Feel free to suggest improvements, and if you run into any bugs let me know!
 
 For those asking, I mainly used gemini to create these nodes.
