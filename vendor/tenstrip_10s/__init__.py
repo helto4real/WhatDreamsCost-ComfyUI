@@ -1,1 +1,1 @@
-"""Bundled MIT-licensed identity anchor implementations from TenStrip/10S-Comfy-nodes."""
+"""Bundled MIT-licensed helpers adapted from TenStrip/10S-Comfy-nodes."""

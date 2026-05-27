@@ -7,6 +7,7 @@ from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
 from .ltx_director_guide import LTXDirectorGuide
 from .ltx_director_tiled_upscale import LTXDirectorTiledUpscaleGuide, LTXDirectorTiledUpscaleSettings
+from .ltx_action_amplifier import LTXActionAmplifier
 from .ltx_identity_anchor import (
     LTXDirectorApplyIdentityAnchor,
     LTXIdentityAnchorCombine,
@@ -28,6 +29,7 @@ class PromptRelay(ComfyExtension):
             LTXDirectorGuide,
             LTXDirectorTiledUpscaleSettings,
             LTXDirectorTiledUpscaleGuide,
+            LTXActionAmplifier,
             LTXIdentityAnchorLatentAware,
             LTXIdentityAnchorFace,
             LTXIdentityAnchorCombine,
@@ -48,6 +50,7 @@ NODE_CLASS_MAPPINGS = {
     "LTXDirectorGuide": LTXDirectorGuide,
     "LTXDirectorTiledUpscaleSettings": LTXDirectorTiledUpscaleSettings,
     "LTXDirectorTiledUpscaleGuide": LTXDirectorTiledUpscaleGuide,
+    "LTXActionAmplifier": LTXActionAmplifier,
     "LTXIdentityAnchorLatentAware": LTXIdentityAnchorLatentAware,
     "LTXIdentityAnchorFace": LTXIdentityAnchorFace,
     "LTXIdentityAnchorCombine": LTXIdentityAnchorCombine,
@@ -65,6 +68,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXDirectorGuide": "LTX Director Guide",
     "LTXDirectorTiledUpscaleSettings": "LTX Director Tiled Upscale Settings",
     "LTXDirectorTiledUpscaleGuide": "LTX Director Tiled Upscale Guide",
+    "LTXActionAmplifier": "LTX Action Amplifier",
     "LTXIdentityAnchorLatentAware": "LTX Identity Anchor: Latent Aware",
     "LTXIdentityAnchorFace": "LTX Identity Anchor: Face",
     "LTXIdentityAnchorCombine": "LTX Identity Anchor: Combine",

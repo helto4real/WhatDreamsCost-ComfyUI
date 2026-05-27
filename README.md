@@ -52,6 +52,7 @@ You will also need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to their lates
 
 - **LTX Director Prompt Optimizer:** Local VLM prompt generation with SFW/NSFW modes, Hugging Face token support, background jobs, learned progress estimates, editable prompt templates, model unload, image downscaling, and VRAM cleanup.
 - **LTX Director Identity Anchors:** New Latent Aware, Face, Combine, and Apply Identity Anchor nodes backed by bundled TenStrip/10S helpers.
+- **LTX Action Amplifier:** Bundled TenStrip/10S token-selective action/motion amplifier for LTX positive conditioning.
 - **LTX Director Tiled Upscale:** New Guide and Settings nodes for tiled latent upscaling with Director guide reapplication.
 - **Timeline media browsers:** Image and audio browser backends with configured folders, media listing, thumbnails, audio durations, and ComfyUI routes.
 - **Privacy mode:** Encrypted Director workflow state plus encrypted/private thumbnail handling.
@@ -357,6 +358,36 @@ LTX Identity Anchor: Combine.identity_anchor
 ```
 
 Leave `scale_strengths` enabled at first. This reduces both strengths slightly so the video does not become too stiff.
+
+### LTX Action Amplifier
+
+`LTX Action Amplifier` is an optional model patch node backed by the bundled 10S Action Amplifier. It analyzes your positive conditioning, identifies action or motion-like tokens, and gently boosts only those tokens during text cross-attention. It is self-contained in this repo and does not require installing 10S Nodes separately.
+
+Recommended wiring:
+
+```text
+LTX Director.model
+  -> LTX Action Amplifier.model
+  -> sampler.model
+
+CLIP
+  -> LTX Action Amplifier.clip
+
+positive conditioning
+  -> LTX Action Amplifier.positive
+```
+
+Recommended starting settings:
+
+```text
+amplification_strength = 0.30
+scale_ceiling = 0.30
+auto_threshold = p95
+amplification_floor = 0.30
+top_k = 3
+```
+
+The effect is intentionally subtle. Raise `amplification_strength` gradually if action prompts still feel underpowered, and keep `scale_ceiling` conservative unless you are explicitly testing stronger attention changes.
 
 ### LTX Director Tiled Upscale Guide
 
