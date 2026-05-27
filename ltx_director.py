@@ -78,6 +78,11 @@ LTX_QUALITY_TIERS = [
     "6 - LTX 2.3 native",
 ]
 
+AUDIO_NORMALIZE_TARGET_RMS = 10 ** (-18.0 / 20.0)
+AUDIO_NORMALIZE_PEAK_CEILING = 10 ** (-1.0 / 20.0)
+AUDIO_NORMALIZE_MAX_GAIN = 2.0
+AUDIO_NORMALIZE_EPSILON = 1e-8
+
 
 def _load_image_tensor(seg: dict) -> torch.Tensor:
     """Decode an image from the ComfyUI input folder (if imageFile provided) or fallback to base64
@@ -177,12 +182,47 @@ def _safe_float(value, fallback: float) -> float:
         return float(fallback)
 
 
+def _safe_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _clamp_audio_volume(value) -> float:
     try:
         volume = float(value)
     except (TypeError, ValueError):
         volume = 1.0
     return max(0.0, min(2.0, volume))
+
+
+def _normalize_audio_waveform(waveform: torch.Tensor, enabled: bool = True) -> torch.Tensor:
+    if not enabled or not torch.is_tensor(waveform) or waveform.numel() == 0:
+        return waveform
+
+    analysis = torch.nan_to_num(waveform.detach().float(), nan=0.0, posinf=0.0, neginf=0.0)
+    peak = torch.max(torch.abs(analysis)).item()
+    if peak <= AUDIO_NORMALIZE_EPSILON:
+        return waveform
+
+    rms = torch.sqrt(torch.mean(analysis * analysis)).item()
+    if rms <= AUDIO_NORMALIZE_EPSILON:
+        return waveform
+
+    rms_gain = AUDIO_NORMALIZE_TARGET_RMS / rms
+    peak_gain = AUDIO_NORMALIZE_PEAK_CEILING / peak
+    gain = min(rms_gain, peak_gain)
+    if gain > 1.0:
+        gain = min(gain, AUDIO_NORMALIZE_MAX_GAIN)
+
+    normalized = waveform * gain
+    final_analysis = torch.nan_to_num(normalized.detach().float(), nan=0.0, posinf=0.0, neginf=0.0)
+    final_peak = torch.max(torch.abs(final_analysis)).item()
+    if final_peak > AUDIO_NORMALIZE_PEAK_CEILING:
+        normalized = normalized * (AUDIO_NORMALIZE_PEAK_CEILING / final_peak)
+    return normalized
 
 
 def _empty_audio(duration_seconds: float = 1.0, sample_rate: int = 44100, channels: int = 2) -> dict:
@@ -418,7 +458,7 @@ def _compress_image_frames(tensor: torch.Tensor, crf: int) -> torch.Tensor:
     ], dim=0)
 
 
-def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_rate: float) -> dict:
+def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_rate: float, normalize_audio: bool = False) -> dict:
     """Parses timeline JSON, loads/trims audio directly from memory using PyAV, 
     and aligns to a global timeline yielding ComfyUI's format.
     Output length explicitly mimics the timeline's duration_frames length."""
@@ -542,6 +582,7 @@ def _build_combined_audio(timeline_data_str: str, duration_frames: int, frame_ra
             log.warning("[PromptRelay] Audio process error for segment %s: %s", seg.get("fileName"), e)
             continue
 
+    out_waveform = _normalize_audio_waveform(out_waveform, normalize_audio)
     return {"waveform": out_waveform.unsqueeze(0), "sample_rate": target_sr}
 
 
@@ -756,6 +797,10 @@ class LTXDirector(io.ComfyNode):
                     "privacy_payload", default="", optional=True,
                     tooltip="Encrypted LTX Director state (auto-managed; do not edit by hand).",
                 ),
+                io.Boolean.Input(
+                    "normalize_audio", default=False, optional=True,
+                    tooltip="Normalize the final mixed timeline audio to balanced loudness while keeping peaks below a safe ceiling.",
+                ),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -780,7 +825,7 @@ class LTXDirector(io.ComfyNode):
                 quality_tier="6 - LTX 2.3 native", resize_method="maintain aspect ratio",
                 divisible_by=32, img_compression=0, audio_vae=None, optional_latent=None,
                 use_custom_audio=False, use_global_prompt=False,
-                privacy_mode=False, privacy_payload="") -> io.NodeOutput:
+                privacy_mode=False, privacy_payload="", normalize_audio=False) -> io.NodeOutput:
 
         frame_rate = _safe_float(frame_rate, 24.0)
 
@@ -907,7 +952,7 @@ class LTXDirector(io.ComfyNode):
         )
 
         # --- Build Audio Output ---
-        audio_out = _build_combined_audio(timeline_data, ltxv_length, frame_rate)
+        audio_out = _build_combined_audio(timeline_data, ltxv_length, frame_rate, _safe_bool(normalize_audio))
         source_output_w = derived_w if derived_w > 0 else target_w
         source_output_h = derived_h if derived_h > 0 else target_h
         source_resize_method = "maintain aspect ratio" if use_input_image_size else resize_method

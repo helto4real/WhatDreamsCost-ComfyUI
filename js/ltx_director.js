@@ -15,7 +15,7 @@ const SOURCE_VIDEO_MAX_GUIDE_FRAMES = 65;
 const PRIVACY_SCHEMA = "whatdreamscost.ltx-director";
 const EMPTY_TIMELINE_JSON = "{\"segments\":[],\"audioSegments\":[]}";
 
-const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "use_global_prompt", "hide_timeline_images_prompts", "privacy_mode", "privacy_payload"];
+const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "normalize_audio", "use_global_prompt", "hide_timeline_images_prompts", "privacy_mode", "privacy_payload"];
 
 function hideWidget(w) {
   if (!w) return;
@@ -6493,6 +6493,21 @@ class TimelineEditor {
       menu.appendChild(this._makeSettingRow("Privacy Mode", cb));
     }
 
+    const normalizeAudioWidget = this.node.widgets?.find(w => w.name === "normalize_audio");
+    if (normalizeAudioWidget) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = widgetBoolValue(normalizeAudioWidget.value);
+      cb.style.cursor = "pointer";
+      cb.title = "Normalize final mixed timeline audio loudness and keep peaks below a safe ceiling.";
+      cb.addEventListener("change", () => {
+        setWidgetBoolValue(normalizeAudioWidget, cb.checked);
+        this.render();
+        if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
+      });
+      menu.appendChild(this._makeSettingRow("Normalize Audio", cb));
+    }
+
     const divider1 = document.createElement("hr");
     divider1.className = "pr-settings-divider";
     menu.appendChild(divider1);
@@ -6905,6 +6920,7 @@ const APPENDED_WIDGET_DEFAULTS = [
   ["hide_timeline_images_prompts", "false"],
   ["privacy_mode", "false"],
   ["privacy_payload", ""],
+  ["normalize_audio", "false"],
 ];
 
 app.registerExtension({
