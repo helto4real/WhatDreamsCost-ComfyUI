@@ -11,15 +11,15 @@ All of my nodes are created with the help of AI, so there may or may not be redu
 <table>
   <tr>
     <td>
-      <p align="center">Overview Video</p>
-      <a href="https://www.youtube.com/watch?v=aXDIr8eNovI">
-        <img src="https://img.youtube.com/vi/aXDIr8eNovI/0.jpg" alt="Overview Video" width="400">
+      <p align="center">LTX Director Trailer</p>
+      <a href="https://www.youtube.com/watch?v=fZgtkRcu4_k">
+        <img src="https://img.youtube.com/vi/fZgtkRcu4_k/0.jpg" alt="LTX Director Trailer" width="400">
       </a>
     </td>
     <td>
-      <p align="center">Prompting and Keyframing Guide</p>
-      <a href="https://www.youtube.com/watch?v=ZY4hsvTzbas">
-        <img src="https://img.youtube.com/vi/ZY4hsvTzbas/0.jpg" alt="Prompting and Keyframing Guide" width="400">
+      <p align="center">LTX Director Tutorial</p>
+      <a href="https://www.youtube.com/watch?v=vM60pJJqqEI">
+        <img src="https://img.youtube.com/vi/vM60pJJqqEI/0.jpg" alt="LTX Director Tutorial" width="400">
       </a>
     </td>
   </tr>
@@ -41,9 +41,28 @@ pip install -r requirements.txt
 
 The optimizer can auto-download supported Hugging Face models into your ComfyUI models folder when you press Generate. Some NSFW/unredacted models may require a Hugging Face access token and accepting the model terms on Hugging Face first.
 
+**❗❗IMPORTANT❗❗**
+
+If you don't see the latest version (v1.3.9) yet in the manager, download the nightly version or fetch updates so the manager list refreshes.
+You will also need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to their latest versions. This node depends on the latest ComfyUI-LTXVideo updates.
+
 # 🔄 Recent Updates
 
+**v1.3.9**
+  * **Fixed recent updates not showing in the manager**
+
+**v1.3.3**
+  * **LTX Director Hotfix 2**
+    - Fixed duration_seconds input issue.
+    - Made both duration widgets visible at all times now.
+    - Implemented audio latent fix to improve compatibility.
+    - Moved nodes into the WhatDreamsCost category.
+
 **v1.3.2**
+  * **LTX Director Hotfix**
+    - Fixed epsilon input overlapping custom_width input.
+    - Fixed invisible widgets in nodes 2.0 when toggling widget visibility through the settings menu.
+
   * **LTX Director Prompt Optimizer**
     - Added a new local prompt optimizer window to LTX Director.
     - Uses timeline images in order to generate LTX/Prompt Relay style per-segment prompts.

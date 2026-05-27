@@ -20,10 +20,10 @@ const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths"
 function hideWidget(w) {
   if (!w) return;
   if (!w._origType && w.type !== "hidden") w._origType = w.type;
-  w.type = "hidden";
   w.hidden = true;
   if (!w.options) w.options = {};
   w.options.hidden = true;
+  w.computeSize = () => [0, 0];
   if (w.element) w.element.style.display = "none";
 }
 
@@ -4508,33 +4508,19 @@ class TimelineEditor {
   }
 
   updateWidgetVisibility() {
-    const mode = this.displayModeWidget ? this.displayModeWidget.value : "seconds";
-
     if (this.durationFramesWidget) {
-      const isVisible = mode === "frames";
-      this.durationFramesWidget.type = isVisible ? "INT" : "hidden";
+      this.durationFramesWidget.type = "INT";
       if (!this.durationFramesWidget.options) this.durationFramesWidget.options = {};
-      this.durationFramesWidget.options.hidden = !isVisible;
-      this.durationFramesWidget.hidden = !isVisible;
-
-      if (isVisible) {
-        delete this.durationFramesWidget.computeSize;
-      } else {
-        this.durationFramesWidget.computeSize = () => [0, 0];
-      }
+      this.durationFramesWidget.options.hidden = false;
+      this.durationFramesWidget.hidden = false;
+      delete this.durationFramesWidget.computeSize;
     }
     if (this.durationSecondsWidget) {
-      const isVisible = mode === "seconds";
-      this.durationSecondsWidget.type = isVisible ? "FLOAT" : "hidden";
+      this.durationSecondsWidget.type = "FLOAT";
       if (!this.durationSecondsWidget.options) this.durationSecondsWidget.options = {};
-      this.durationSecondsWidget.options.hidden = !isVisible;
-      this.durationSecondsWidget.hidden = !isVisible;
-
-      if (isVisible) {
-        delete this.durationSecondsWidget.computeSize;
-      } else {
-        this.durationSecondsWidget.computeSize = () => [0, 0];
-      }
+      this.durationSecondsWidget.options.hidden = false;
+      this.durationSecondsWidget.hidden = false;
+      delete this.durationSecondsWidget.computeSize;
     }
 
     // Force node resize and redraw deferred to next tick
@@ -6281,6 +6267,16 @@ class TimelineEditor {
     for (const name of this._settingsWidgetNames) {
       const w = this.node.widgets?.find(w => w.name === name);
       if (w) hideWidget(w);
+
+      if (this.node.inputs) {
+        const inputIdx = this.node.inputs.findIndex(i => i.name === name);
+        if (inputIdx !== -1) {
+          const input = this.node.inputs[inputIdx];
+          if (input.link == null) {
+            this.node.removeInput(inputIdx);
+          }
+        }
+      }
     }
     this.updateWidgetVisibility();
 
@@ -6302,15 +6298,15 @@ class TimelineEditor {
     for (const name of this._settingsWidgetNames) {
       const w = this.node.widgets?.find(w => w.name === name);
       if (!w) continue;
-      // Restore original type from widget's origType if available, otherwise guess.
       const typeMap = {
-        display_mode: "combo", epsilon: "number", divisible_by: "number",
-        img_compression: "number",
+        display_mode: "combo", epsilon: "FLOAT", divisible_by: "INT",
+        img_compression: "INT",
       };
-      w.type = typeMap[name] || "number";
+      w.type = typeMap[name] || w._origType || "number";
       w.hidden = false;
       if (w.options) w.options.hidden = false;
-      w.computeSize = null;
+      delete w.computeSize;
+      if (w.element) w.element.style.display = "";
     }
     this.updateWidgetVisibility();
 

@@ -649,7 +649,7 @@ class LTXDirector(io.ComfyNode):
         return io.Schema(
             node_id="LTXDirector",
             display_name="LTX Director",
-            category="conditioning/prompt_relay",
+            category="WhatDreamsCost",
             description=(
                 "Same as Prompt Relay Encode, but local prompts and segment lengths are edited "
                 "visually as draggable blocks on a timeline. The duration_frames input only sets the "
@@ -926,9 +926,10 @@ class LTXDirector(io.ComfyNode):
         if audio_vae is not None:
             # Helper to generate empty latent
             def get_empty_latent():
+                inner = getattr(audio_vae, "first_stage_model", audio_vae)
                 z_channels = audio_vae.latent_channels
-                audio_freq = audio_vae.first_stage_model.latent_frequency_bins
-                num_audio_latents = audio_vae.first_stage_model.num_of_latents_from_frames(ltxv_length, frame_rate)
+                audio_freq = inner.latent_frequency_bins
+                num_audio_latents = inner.num_of_latents_from_frames(ltxv_length, frame_rate)
                 audio_latents = torch.zeros(
                     (1, z_channels, num_audio_latents, audio_freq),
                     device=comfy.model_management.intermediate_device(),
@@ -939,8 +940,23 @@ class LTXDirector(io.ComfyNode):
                 try:
                     if audio_out is not None:
                         # 1. Encode audio waveform into latent space
-                        # VAE expects shape (batch, samples, channels), so we move dim 1 (channels) to the end
-                        latent_samples = audio_vae.encode(audio_out["waveform"].movedim(1, -1))
+                        waveform = audio_out["waveform"]
+                        if waveform.ndim == 2:
+                            waveform = waveform.unsqueeze(0)
+                        if waveform.ndim != 3:
+                            raise ValueError(
+                                f"Expected custom audio waveform with 2 or 3 dims, got shape {tuple(waveform.shape)}"
+                            )
+
+                        if hasattr(audio_vae, "first_stage_model"):
+                            # ComfyUI's VAE wrapper expects (batch, samples, channels).
+                            latent_samples = audio_vae.encode(waveform.movedim(1, -1))
+                        else:
+                            # Raw LTX AudioVAE expects (batch, channels, samples).
+                            latent_samples = audio_vae.encode(
+                                waveform,
+                                sample_rate=audio_out.get("sample_rate", 44100),
+                            )
                         
                         if latent_samples.numel() == 0:
                             raise ValueError("Encoded audio latent is empty (0 elements).")
@@ -971,7 +987,8 @@ class LTXDirector(io.ComfyNode):
                     audio_latent = get_empty_latent()
                     log.info("[PromptRelay] Auto-generated empty audio latent.")
                 except Exception as e:
-                    log.warning("[PromptRelay] Could not generate empty audio latent: %s", e)
+                    log.error("[PromptRelay] Could not generate empty audio latent: %s", e)
+                    raise e
 
         return io.NodeOutput(
             patched,
