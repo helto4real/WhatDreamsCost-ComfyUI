@@ -14,8 +14,34 @@ const SOURCE_VIDEO_DEFAULT_GUIDE_FRAMES = 9;
 const SOURCE_VIDEO_MAX_GUIDE_FRAMES = 65;
 const PRIVACY_SCHEMA = "whatdreamscost.ltx-director";
 const EMPTY_TIMELINE_JSON = "{\"segments\":[],\"audioSegments\":[]}";
+const IMAGE_BROWSER_COLUMNS_STORAGE_KEY = "wdc_ltx_director_image_columns";
+const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
+const IMAGE_BROWSER_COLUMNS_MIN = 2;
+const IMAGE_BROWSER_COLUMNS_MAX = 8;
 
 const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "normalize_audio", "use_global_prompt", "hide_timeline_images_prompts", "privacy_mode", "privacy_payload"];
+
+function normalizeImageBrowserColumns(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return IMAGE_BROWSER_COLUMNS_DEFAULT;
+  return clamp(parsed, IMAGE_BROWSER_COLUMNS_MIN, IMAGE_BROWSER_COLUMNS_MAX);
+}
+
+function getStoredImageBrowserColumns() {
+  try {
+    return normalizeImageBrowserColumns(window.localStorage?.getItem(IMAGE_BROWSER_COLUMNS_STORAGE_KEY));
+  } catch {
+    return IMAGE_BROWSER_COLUMNS_DEFAULT;
+  }
+}
+
+function setStoredImageBrowserColumns(value) {
+  const columns = normalizeImageBrowserColumns(value);
+  try {
+    window.localStorage?.setItem(IMAGE_BROWSER_COLUMNS_STORAGE_KEY, String(columns));
+  } catch { }
+  return columns;
+}
 
 function hideWidget(w) {
   if (!w) return;
@@ -3961,6 +3987,7 @@ class TimelineEditor {
     let recursive = true;
     let hideImagesUntilHover = true;
     let sortMode = "newest";
+    columnsInput.value = String(getStoredImageBrowserColumns());
     const sortOptions = [
       { value: "newest", label: "Newest" },
       { value: "oldest", label: "Oldest" },
@@ -3985,7 +4012,8 @@ class TimelineEditor {
     };
 
     const syncColumns = () => {
-      const columns = Number(columnsInput.value || 4);
+      const columns = setStoredImageBrowserColumns(columnsInput.value);
+      columnsInput.value = String(columns);
       grid.style.setProperty("--pr-image-columns", String(columns));
       columnsValue.textContent = String(columns);
     };
