@@ -46,6 +46,29 @@ The optimizer can auto-download supported Hugging Face models into your ComfyUI 
 If you don't see the latest version (v1.3.9) yet in the manager, download the nightly version or fetch updates so the manager list refreshes.
 You will also need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to their latest versions. This node depends on the latest ComfyUI-LTXVideo updates.
 
+# Changes Compared To main
+
+## New features
+
+- **LTX Director Prompt Optimizer:** Local VLM prompt generation with SFW/NSFW modes, Hugging Face token support, background jobs, learned progress estimates, editable prompt templates, model unload, image downscaling, and VRAM cleanup.
+- **LTX Director Identity Anchors:** New Latent Aware, Face, Combine, and Apply Identity Anchor nodes backed by bundled TenStrip/10S helpers.
+- **LTX Director Tiled Upscale:** New Guide and Settings nodes for tiled latent upscaling with Director guide reapplication.
+- **Timeline media browsers:** Image and audio browser backends with configured folders, media listing, thumbnails, audio durations, and ComfyUI routes.
+- **Privacy mode:** Encrypted Director workflow state plus encrypted/private thumbnail handling.
+- **Source-video timeline support:** Director can expose decoded source video frames, audio, frame rate, and frame count.
+- **Audio timeline upgrades:** Audio lanes, volume/lane display, free-lane placement, and optional mixed-audio normalization.
+
+## Changes from original
+
+- README updated with LTX Director assets, optimizer docs, identity-anchor docs, tiled-upscale docs, workflow preview, and current tutorial links.
+- Added optional optimizer dependencies in `requirements.txt`.
+- Updated `pyproject.toml` version from `1.3.1` to `1.3.9`.
+- Moved existing nodes into the `WhatDreamsCost` category.
+- Updated `__init__.py` to register new V3 nodes and import route modules for side-effect route registration.
+- Updated `.gitignore` to exclude local `config/` and `thumbnail_cache/`.
+- Added `THIRD_PARTY_NOTICES.md` for bundled TenStrip/10S code.
+- Added tests for privacy, prompt optimizer, timeline media IO, audio normalization, identity anchors, and tiled upscale.
+
 # 🔄 Recent Updates
 
 **v1.3.9**
