@@ -150,6 +150,35 @@ function clampVolume(value) {
   return clamp(parsed, 0, 2);
 }
 
+function analyzeAudioBufferLoudness(audioBuffer) {
+  const targetRms = Math.pow(10, -18 / 20);
+  const peakCeiling = Math.pow(10, -1 / 20);
+  let sumSquares = 0;
+  let sampleTotal = 0;
+  let peak = 0;
+
+  for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+    const samples = audioBuffer.getChannelData(channel);
+    sampleTotal += samples.length;
+    for (let i = 0; i < samples.length; i++) {
+      const value = Math.abs(samples[i]);
+      sumSquares += value * value;
+      if (value > peak) peak = value;
+    }
+  }
+
+  if (sampleTotal <= 0 || peak <= 0 || sumSquares <= 0) {
+    return { rms: 0, peak, volume: 1.0 };
+  }
+
+  const rms = Math.sqrt(sumSquares / sampleTotal);
+  const rmsGain = targetRms / rms;
+  const peakGain = peakCeiling / peak;
+  const volume = clampVolume(Math.min(rmsGain, peakGain));
+
+  return { rms, peak, volume };
+}
+
 function normalizeAudioLane(value) {
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -3515,6 +3544,7 @@ class TimelineEditor {
     const newStart = clamp(insertFrame, 0, Math.max(0, visualDurationFrames - 1));
     const newLength = clipFrames;
     const newLane = this.findFreeAudioLane(newStart, newLength, null, options.targetLane);
+    const loudness = analyzeAudioBufferLoudness(audioBuffer);
 
     const seg = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
@@ -3526,7 +3556,7 @@ class TimelineEditor {
       audioDurationFrames: clipFrames,
       audioFile: options.audioFile,
       fileName: options.fileName || options.audioFile,
-      volume: 1.0,
+      volume: loudness.volume,
       waveformPeaks: this.getAudioWaveformPeaks(audioBuffer)
     };
     if (options.audioFolderAlias) {
@@ -5104,10 +5134,12 @@ class TimelineEditor {
 
     if (seg.waveformPeaks && pxWidth > 0) {
       ctx.fillStyle = isSelected ? "rgba(100, 255, 100, 0.72)" : "rgba(100, 255, 100, 0.38)";
-      const startRatio = seg.trimStart / seg.audioDurationFrames;
-      const endRatio = (seg.trimStart + seg.length) / seg.audioDurationFrames;
+      const audioDurationFrames = Math.max(1, seg.audioDurationFrames || seg.length || 1);
+      const startRatio = (seg.trimStart || 0) / audioDurationFrames;
+      const endRatio = ((seg.trimStart || 0) + (seg.length || 1)) / audioDurationFrames;
       const peakCount = seg.waveformPeaks.length;
       const centerY = yOffset + trackHeight / 2;
+      const volume = clampVolume(seg.volume);
 
       ctx.beginPath();
       for (let i = 0; i < pxWidth; i++) {
@@ -5116,7 +5148,7 @@ class TimelineEditor {
         const peakIdx = Math.floor(globalRatio * peakCount);
 
         if (peakIdx >= 0 && peakIdx < peakCount) {
-          const val = seg.waveformPeaks[peakIdx];
+          const val = clamp(seg.waveformPeaks[peakIdx] * volume, 0, 1);
           const amp = (val * (trackHeight - 12) / 2) * 0.9;
           ctx.fillRect(startX + i, centerY - amp, 1, amp * 2);
         }
