@@ -3500,6 +3500,17 @@ class TimelineEditor {
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  formatAudioDuration(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value < 0) return "";
+    const totalSeconds = Math.max(0, Math.round(value));
+    if (totalSeconds < 60) return `${totalSeconds} s`;
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+
   getDecodeAudioContext() {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -3705,9 +3716,12 @@ class TimelineEditor {
 
         const details = document.createElement("div");
         details.className = "pr-audio-details";
+        const sizeText = this.formatAudioFileSize(audio.size);
+        const durationText = this.formatAudioDuration(audio.duration_seconds);
+        const metaText = [sizeText, durationText].filter(Boolean).join(" · ");
         details.innerHTML = `
           <div class="pr-audio-name">${escapeHtml(audio.filename)}</div>
-          <div class="pr-audio-size">${escapeHtml(this.formatAudioFileSize(audio.size))}</div>`;
+          <div class="pr-audio-size">${escapeHtml(metaText)}</div>`;
 
         row.appendChild(playButton);
         row.appendChild(details);

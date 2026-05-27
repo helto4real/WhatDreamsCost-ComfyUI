@@ -67,7 +67,7 @@ async def get_audios(request):
         if not os.path.isdir(folder.path):
             return web.json_response({"audios": [], "warning": "Folder does not exist."})
 
-        audios = list_audio(folder.path, recursive=recursive)
+        audios = list_audio(folder.path, recursive=recursive, include_duration=True)
         for audio in audios:
             audio["audio_url"] = (
                 f"{ROUTE_PREFIX}/audio?"
