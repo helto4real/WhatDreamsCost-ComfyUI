@@ -49,6 +49,43 @@ def _first_guide_image(guide_data):
     return images[0] if images else None
 
 
+def select_director_reference_image(guide_data, reference_label="image1"):
+    if not isinstance(guide_data, dict):
+        raise ValueError("LTX Director reference image selector needs guide_data from an LTX Director node.")
+
+    references = guide_data.get("reference_images") or []
+    if not references:
+        raise ValueError("LTX Director guide_data does not contain any character reference images.")
+
+    label = str(reference_label or "").strip().lower()
+    if not label:
+        entry = references[0]
+    else:
+        entry = next(
+            (
+                ref for ref in references
+                if str(ref.get("label") or "").strip().lower() == label
+                or str(ref.get("id") or "").strip().lower() == label
+            ),
+            None,
+        )
+        if entry is None:
+            available = sorted(
+                {
+                    str(ref.get("label") or ref.get("id") or "").strip()
+                    for ref in references
+                    if str(ref.get("label") or ref.get("id") or "").strip()
+                }
+            )
+            suffix = f" Available references: {', '.join(available)}." if available else ""
+            raise ValueError(f"LTX Director reference image '{reference_label}' was not found.{suffix}")
+
+    image = entry.get("image")
+    if image is None:
+        raise ValueError(f"LTX Director reference image '{entry.get('label') or reference_label}' has no loaded image tensor.")
+    return image
+
+
 def _scaled_anchor(anchor, strength_scale):
     if not isinstance(anchor, dict):
         return anchor
@@ -373,6 +410,35 @@ class LTXIdentityAnchorCombine(io.ComfyNode):
         )
 
 
+class LTXDirectorReferenceImage(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="LTXDirectorReferenceImage",
+            display_name="LTX Director Reference Image",
+            category="LTXVCustom/Identity",
+            description=(
+                "Selects a character reference image from LTX Director guide_data so it can be "
+                "connected to LTX Identity Anchor: Latent Aware.reference_image."
+            ),
+            inputs=[
+                GuideData.Input("guide_data", tooltip="Guide data produced by LTX Director."),
+                io.String.Input(
+                    "reference_label",
+                    default="image1",
+                    tooltip="Director reference label or id, for example image1. Leave blank to use the first reference.",
+                ),
+            ],
+            outputs=[
+                io.Image.Output(display_name="reference_image"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, guide_data, reference_label="image1") -> io.NodeOutput:
+        return io.NodeOutput(select_director_reference_image(guide_data, reference_label))
+
+
 class LTXDirectorApplyIdentityAnchor(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -412,6 +478,7 @@ NODE_CLASS_MAPPINGS = {
     "LTXIdentityAnchorLatentAware": LTXIdentityAnchorLatentAware,
     "LTXIdentityAnchorFace": LTXIdentityAnchorFace,
     "LTXIdentityAnchorCombine": LTXIdentityAnchorCombine,
+    "LTXDirectorReferenceImage": LTXDirectorReferenceImage,
     "LTXDirectorApplyIdentityAnchor": LTXDirectorApplyIdentityAnchor,
 }
 
@@ -419,5 +486,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXIdentityAnchorLatentAware": "LTX Identity Anchor: Latent Aware",
     "LTXIdentityAnchorFace": "LTX Identity Anchor: Face",
     "LTXIdentityAnchorCombine": "LTX Identity Anchor: Combine",
+    "LTXDirectorReferenceImage": "LTX Director Reference Image",
     "LTXDirectorApplyIdentityAnchor": "LTX Director Apply Identity Anchor",
 }

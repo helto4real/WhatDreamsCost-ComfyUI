@@ -9,10 +9,11 @@ class LTXDirectorPrivacyInputTests(unittest.TestCase):
     def test_derive_timeline_outputs_matches_commit_shape(self):
         timeline = {
             "segments": [
-                {"id": "a", "start": 0, "length": 12, "type": "image", "prompt": "first", "guideStrength": 0.8},
+                {"id": "a", "start": 0, "length": 12, "type": "image", "prompt": "first @image1:character", "guideStrength": 0.8},
                 {"id": "b", "start": 18, "length": 12, "type": "text", "prompt": "second"},
             ],
             "audioSegments": [],
+            "referenceImages": [{"id": "ref1", "label": "image1", "kind": "character", "imageFile": "private.png"}],
         }
         derived = derive_timeline_outputs(timeline, 36)
         self.assertEqual(derived["local_prompts"], "first | second")
@@ -35,6 +36,9 @@ class LTXDirectorPrivacyInputTests(unittest.TestCase):
                 {"id": "prompt", "start": 9, "length": 15, "type": "text", "prompt": "private followup"},
             ],
             "audioSegments": [{"id": "audio", "start": 0, "length": 24, "audioFile": "private.wav"}],
+            "referenceImages": [
+                {"id": "ref1", "label": "image1", "kind": "character", "imageFile": "private-reference.png"}
+            ],
         }
         with tempfile.TemporaryDirectory() as tmp:
             envelope = encrypt_state({"global_prompt": "private global", "timeline": timeline}, tmp)
@@ -55,6 +59,7 @@ class LTXDirectorPrivacyInputTests(unittest.TestCase):
         self.assertEqual(resolved["segment_lengths"], "9,15")
         self.assertEqual(resolved["guide_strength"], "0.85")
         self.assertIn("private.mp4", resolved["timeline_data"])
+        self.assertIn("private-reference.png", resolved["timeline_data"])
 
 
 if __name__ == "__main__":

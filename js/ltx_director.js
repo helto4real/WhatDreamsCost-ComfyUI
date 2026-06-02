@@ -13,7 +13,7 @@ const MAX_THUMBNAIL_DIM = 512; // Increased to maintain quality for taller image
 const SOURCE_VIDEO_DEFAULT_GUIDE_FRAMES = 9;
 const SOURCE_VIDEO_MAX_GUIDE_FRAMES = 65;
 const PRIVACY_SCHEMA = "whatdreamscost.ltx-director";
-const EMPTY_TIMELINE_JSON = "{\"segments\":[],\"audioSegments\":[]}";
+const EMPTY_TIMELINE_JSON = "{\"segments\":[],\"audioSegments\":[],\"referenceImages\":[]}";
 const IMAGE_BROWSER_COLUMNS_STORAGE_KEY = "wdc_ltx_director_image_columns";
 const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
 const IMAGE_BROWSER_COLUMNS_MIN = 2;
@@ -41,6 +41,19 @@ function setStoredImageBrowserColumns(value) {
     window.localStorage?.setItem(IMAGE_BROWSER_COLUMNS_STORAGE_KEY, String(columns));
   } catch { }
   return columns;
+}
+
+function makeLocalId(prefix = "id") {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeReferenceLabel(value, fallbackIndex = 0) {
+  const label = String(value || "").trim().toLowerCase();
+  return /^image[1-9]\d*$/.test(label) ? label : `image${fallbackIndex + 1}`;
+}
+
+function referenceTag(ref) {
+  return `@${normalizeReferenceLabel(ref?.label)}:character`;
 }
 
 function hideWidget(w) {
@@ -369,6 +382,7 @@ const STYLES = `
     width: 100%;
     flex-grow: 1; /* Automatically scales to fill node height */
     min-height: 80px;
+    gap: 8px;
   }
   .pr-prompt-area {
     width: 100%;
@@ -387,6 +401,103 @@ const STYLES = `
   }
   .pr-prompt-area:focus {
     border-color: #888;
+  }
+  .pr-reference-panel {
+    display: none;
+    background: #1b1b1b;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 8px;
+    box-sizing: border-box;
+    color: #ddd;
+  }
+  .pr-reference-panel.is-open {
+    display: block;
+  }
+  .pr-reference-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .pr-reference-title {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .pr-reference-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .pr-reference-card {
+    background: #222;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 6px;
+    display: grid;
+    grid-template-columns: 52px 1fr;
+    gap: 8px;
+    min-width: 0;
+  }
+  .pr-reference-thumb {
+    width: 52px;
+    height: 52px;
+    border-radius: 4px;
+    background: #111;
+    object-fit: cover;
+    border: 1px solid #333;
+  }
+  .pr-reference-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .pr-reference-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    min-width: 0;
+  }
+  .pr-reference-label-input {
+    min-width: 0;
+    flex: 1;
+    background: #181818;
+    color: #eee;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 3px 5px;
+    font-size: 11px;
+  }
+  .pr-reference-tag {
+    font-size: 11px;
+    color: #a8c7ff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pr-reference-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .pr-reference-mini-btn {
+    background: #181818;
+    color: #ddd;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 3px 5px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+  .pr-reference-mini-btn:hover {
+    background: #2c2c2c;
+  }
+  .pr-reference-empty {
+    color: #999;
+    font-size: 11px;
+    padding: 6px 0;
   }
   .pr-privacy-hidden-text {
     color: transparent !important;
@@ -1448,12 +1559,13 @@ const ICONS = {
 
 // --- Data Models ---
 function parseInitial(jsonStr) {
-  let parsed = { segments: [], audioSegments: [] };
+  let parsed = { segments: [], audioSegments: [], referenceImages: [] };
   try {
     if (jsonStr) {
       const p = JSON.parse(jsonStr);
       if (Array.isArray(p.segments)) parsed.segments = p.segments;
       if (Array.isArray(p.audioSegments)) parsed.audioSegments = p.audioSegments;
+      if (Array.isArray(p.referenceImages)) parsed.referenceImages = p.referenceImages;
     }
   } catch (e) { }
 
@@ -1478,6 +1590,24 @@ function parseInitial(jsonStr) {
   }
   assignMissingAudioLanes(parsed.audioSegments);
 
+  parsed.referenceImages = parsed.referenceImages
+    .filter((ref) => ref && typeof ref === "object")
+    .map((ref, index) => ({
+      id: ref.id || makeLocalId("ref"),
+      label: normalizeReferenceLabel(ref.label, index),
+      kind: "character",
+      enabled: ref.enabled !== false,
+      strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      ...ref,
+    }))
+    .map((ref, index) => ({
+      ...ref,
+      label: normalizeReferenceLabel(ref.label, index),
+      kind: "character",
+      enabled: ref.enabled !== false,
+      strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+    }));
+
   return parsed;
 }
 
@@ -1494,7 +1624,7 @@ class TimelineEditor {
     this.canvasHeight = CANVAS_HEIGHT;
 
     // Core data
-    this.timeline = { segments: [], audioSegments: [] };
+    this.timeline = { segments: [], audioSegments: [], referenceImages: [] };
     this.selectionType = "image"; // "image" or "audio"
     this.selectedIndex = -1;
 
@@ -1562,7 +1692,7 @@ class TimelineEditor {
     this.createDOM();
     this.applyGlobalPromptVisibility();
     if (this.isPrivacyModeEnabled() && isEncryptedPrivacyPayload(this.privacyPayloadWidget?.value)) {
-      this.timeline = { segments: [], audioSegments: [] };
+      this.timeline = { segments: [], audioSegments: [], referenceImages: [] };
       this.privacyLocked = true;
       this.privacyStatus = "Decrypting private timeline data...";
       this.updatePrivacyStatus();
@@ -1674,6 +1804,7 @@ class TimelineEditor {
     this.privacyStatus = message;
     this.privacyLocked = locked;
     this.updatePrivacyStatus();
+    this.renderReferencesPanel();
   }
 
   updatePrivacyStatus() {
@@ -1735,6 +1866,7 @@ class TimelineEditor {
       this.timeline = parseInitial(JSON.stringify(state.timeline || {}));
       this.ensureAudioTrackHeight();
       this.loadImages();
+      this.renderReferencesPanel();
       this.selectionType = "image";
       this.selectedIndex = clamp(this.selectedIndex, -1, Math.max(-1, this.timeline.segments.length - 1));
       this.updateUIFromSelection();
@@ -1744,7 +1876,7 @@ class TimelineEditor {
       this.render();
       return true;
     } catch (err) {
-      this.timeline = { segments: [], audioSegments: [] };
+      this.timeline = { segments: [], audioSegments: [], referenceImages: [] };
       this.setPrivacyStatus(`Private timeline locked: ${err.message}`, true);
       this.updateUIFromSelection();
       this.render();
@@ -1797,6 +1929,7 @@ class TimelineEditor {
     }
     setWidgetBoolValue(this.privacyModeWidget, false);
     if (this.privacyPayloadWidget) this.privacyPayloadWidget.value = "";
+    this.renderReferencesPanel();
     if (!this.privacyStatus.startsWith("Privacy disabled, but thumbnail cache could not be cleared")) {
       this.setPrivacyStatus("", false);
     }
@@ -2054,6 +2187,183 @@ class TimelineEditor {
         seg.imgObj.src = seg.imageB64;
       }
     }
+    for (const ref of this.timeline.referenceImages || []) {
+      if (ref.imageB64 && !ref.imgObj) {
+        ref.imgObj = new Image();
+        ref.imgObj.onload = () => {
+          this.renderReferencesPanel();
+          this.render();
+        };
+        ref.imgObj.src = ref.imageB64;
+      }
+    }
+  }
+
+  nextReferenceLabel() {
+    const used = new Set((this.timeline.referenceImages || []).map((ref) => normalizeReferenceLabel(ref.label)));
+    let index = 1;
+    while (used.has(`image${index}`)) index += 1;
+    return `image${index}`;
+  }
+
+  normalizeReferenceList() {
+    this.timeline.referenceImages = (this.timeline.referenceImages || [])
+      .filter((ref) => ref && typeof ref === "object")
+      .map((ref, index) => ({
+        ...ref,
+        id: ref.id || makeLocalId("ref"),
+        label: normalizeReferenceLabel(ref.label, index),
+        kind: "character",
+        enabled: ref.enabled !== false,
+        strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      }));
+  }
+
+  renderReferencesPanel() {
+    if (!this.referencesPanel || !this.referencesList) return;
+    const refs = this.timeline.referenceImages || [];
+    this.referencesPanel.classList.toggle("is-open", !!this.referencesOpen);
+    if (this.addReferenceBtn) this.addReferenceBtn.disabled = this.privacyLocked;
+    this.referencesList.innerHTML = "";
+
+    if (!refs.length) {
+      const empty = document.createElement("div");
+      empty.className = "pr-reference-empty";
+      empty.textContent = "No character references.";
+      this.referencesList.appendChild(empty);
+      return;
+    }
+
+    refs.forEach((ref, index) => {
+      const card = document.createElement("div");
+      card.className = "pr-reference-card";
+
+      const img = document.createElement("img");
+      img.className = "pr-reference-thumb";
+      img.alt = "";
+      img.src = this.getTimelineImageThumbUrl(ref.imageFolderAlias, ref);
+      img.title = ref.imageFile || ref.fileName || ref.label || "Reference image";
+      img.addEventListener("click", () => {
+        if (ref.imageB64) this.showImagePreview(ref.imageB64, `${referenceTag(ref)} ${ref.imageFile || ""}`.trim());
+      });
+
+      const meta = document.createElement("div");
+      meta.className = "pr-reference-meta";
+
+      const labelRow = document.createElement("div");
+      labelRow.className = "pr-reference-row";
+      const labelInput = document.createElement("input");
+      labelInput.className = "pr-reference-label-input";
+      labelInput.value = normalizeReferenceLabel(ref.label, index);
+      labelInput.title = "Reference label used in prompt tags.";
+      labelInput.disabled = this.privacyLocked;
+      for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
+        labelInput.addEventListener(eventName, (event) => event.stopPropagation());
+      }
+      labelInput.addEventListener("change", () => {
+        if (this.privacyLocked) return;
+        ref.label = normalizeReferenceLabel(labelInput.value, index);
+        labelInput.value = ref.label;
+        this.commitChanges(true);
+        this.renderReferencesPanel();
+      });
+      labelRow.appendChild(labelInput);
+
+      const tag = document.createElement("div");
+      tag.className = "pr-reference-tag";
+      tag.textContent = referenceTag(ref);
+      tag.title = referenceTag(ref);
+
+      const actions = document.createElement("div");
+      actions.className = "pr-reference-actions";
+
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "pr-reference-mini-btn";
+      copyBtn.textContent = "Copy";
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(referenceTag(ref));
+        } catch {
+          window.prompt("Reference tag", referenceTag(ref));
+        }
+      });
+
+      const insertBtn = document.createElement("button");
+      insertBtn.type = "button";
+      insertBtn.className = "pr-reference-mini-btn";
+      insertBtn.textContent = "Insert";
+      insertBtn.disabled = this.privacyLocked;
+      insertBtn.addEventListener("click", () => this.insertReferenceTag(ref));
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "pr-reference-mini-btn";
+      removeBtn.textContent = "Remove";
+      removeBtn.disabled = this.privacyLocked;
+      removeBtn.addEventListener("click", () => {
+        if (this.privacyLocked) return;
+        this.timeline.referenceImages = (this.timeline.referenceImages || []).filter((candidate) => candidate.id !== ref.id);
+        this.commitChanges(true);
+        this.renderReferencesPanel();
+      });
+
+      actions.appendChild(copyBtn);
+      actions.appendChild(insertBtn);
+      actions.appendChild(removeBtn);
+      meta.appendChild(labelRow);
+      meta.appendChild(tag);
+      meta.appendChild(actions);
+      card.appendChild(img);
+      card.appendChild(meta);
+      this.referencesList.appendChild(card);
+    });
+  }
+
+  async addReferenceImageFromBrowser(folderAlias, image) {
+    const imageUrl = this.getTimelineImageUrl(folderAlias, image);
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        this.normalizeReferenceList();
+        const ref = {
+          id: makeLocalId("ref"),
+          label: this.nextReferenceLabel(),
+          kind: "character",
+          enabled: true,
+          strength: 1.0,
+          imageFolderAlias: folderAlias,
+          imageFile: image.filename,
+          imageB64: imageUrl,
+          width: image.width || 0,
+          height: image.height || 0,
+          mtime: image.mtime || 0,
+          imgObj: img,
+        };
+        this.timeline.referenceImages.push(ref);
+        this.referencesOpen = true;
+        this.commitChanges(true);
+        this.renderReferencesPanel();
+        resolve();
+      };
+      img.onerror = () => reject(new Error(`Could not load reference image: ${image.filename}`));
+      img.src = imageUrl;
+    });
+  }
+
+  insertReferenceTag(ref) {
+    if (this.privacyLocked) return;
+    const tag = referenceTag(ref);
+    if (this.selectionType !== "image" || !this.timeline.segments[this.selectedIndex]) {
+      return;
+    }
+    const seg = this.timeline.segments[this.selectedIndex];
+    const current = String(seg.prompt || "");
+    if (current.includes(tag)) return;
+    const next = current.trim() ? `${current.trim()} ${tag}` : tag;
+    seg.prompt = next;
+    if (this.promptInput && !this.shouldHideTimelineImagesPrompts()) this.promptInput.value = next;
+    this.commitChanges(true);
   }
 
   createDOM() {
@@ -2188,6 +2498,21 @@ class TimelineEditor {
     sourceVideoBtn.title = "Add a locked source video at the beginning of the timeline.";
     sourceVideoBtn.addEventListener("click", () => this.videoSourceInput.click());
 
+    const referencesBtn = document.createElement("button");
+    referencesBtn.className = "pr-btn";
+    referencesBtn.innerHTML = `${ICONS.upload} References`;
+    referencesBtn.title = "Show character reference images.";
+    referencesBtn.addEventListener("click", () => {
+      this.referencesOpen = !this.referencesOpen;
+      this.renderReferencesPanel();
+      if (this.node && this.node.computeSize) {
+        setTimeout(() => {
+          this.node.size[1] = this.node.computeSize()[1];
+          if (app.graph) app.graph.setDirtyCanvas(true, true);
+        }, 0);
+      }
+    });
+
     const addTextBtn = document.createElement("button");
     addTextBtn.className = "pr-btn";
     addTextBtn.innerHTML = `${ICONS.text} Add Text`;
@@ -2206,6 +2531,7 @@ class TimelineEditor {
     actionGroup.appendChild(addTextBtn);
     actionGroup.appendChild(sourceVideoBtn);
     actionGroup.appendChild(uploadAudioBtn);
+    actionGroup.appendChild(referencesBtn);
     actionGroup.appendChild(deleteBtn);
     toolbar.appendChild(actionGroup);
 
@@ -2383,8 +2709,35 @@ class TimelineEditor {
     this.audioInfoArea = document.createElement("div");
     this.audioInfoArea.className = "pr-audio-info";
 
+    this.referencesOpen = false;
+    this.referencesPanel = document.createElement("div");
+    this.referencesPanel.className = "pr-reference-panel";
+    const referencesHeader = document.createElement("div");
+    referencesHeader.className = "pr-reference-header";
+    const referencesTitle = document.createElement("div");
+    referencesTitle.className = "pr-reference-title";
+    referencesTitle.textContent = "Character References";
+    const addReferenceBtn = document.createElement("button");
+    addReferenceBtn.className = "pr-btn";
+    addReferenceBtn.type = "button";
+    addReferenceBtn.innerHTML = `${ICONS.upload} Add Reference`;
+    addReferenceBtn.disabled = this.privacyLocked;
+    addReferenceBtn.addEventListener("click", () => {
+      if (this.privacyLocked) return;
+      this.showTimelineImageBrowser(null, null, { mode: "reference" });
+    });
+    this.addReferenceBtn = addReferenceBtn;
+    referencesHeader.appendChild(referencesTitle);
+    referencesHeader.appendChild(addReferenceBtn);
+    this.referencesList = document.createElement("div");
+    this.referencesList.className = "pr-reference-list";
+    this.referencesPanel.appendChild(referencesHeader);
+    this.referencesPanel.appendChild(this.referencesList);
+
     propContainer.appendChild(this.promptInput);
+    propContainer.appendChild(this.referencesPanel);
     propContainer.appendChild(this.audioInfoArea);
+    this.renderReferencesPanel();
 
     this.wrapper.addEventListener("dragover", (e) => {
       e.preventDefault();
@@ -3450,6 +3803,19 @@ class TimelineEditor {
     return image.image_url || `/wdc_timeline_images/image?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(image.filename)}&t=${encodeURIComponent(image.mtime || 0)}`;
   }
 
+  getTimelineImageThumbUrl(folderAlias, image) {
+    const filename = image.filename || image.imageFile || "";
+    if (!filename) return image.thumb_url || image.imageB64 || "";
+    const params = new URLSearchParams({
+      alias: folderAlias || image.imageFolderAlias || "input",
+      filename,
+      t: String(image.mtime || 0),
+    });
+    if (this.isPrivacyModeEnabled()) params.set("privacy", "1");
+    if (this.thumbnailCacheBust) params.set("cacheBust", this.thumbnailCacheBust);
+    return `/wdc_timeline_images/thumb?${params.toString()}`;
+  }
+
   getTimelineAudioUrl(folderAlias, audio) {
     return audio.audio_url || `/wdc_timeline_audio/audio?alias=${encodeURIComponent(folderAlias)}&filename=${encodeURIComponent(audio.filename)}&t=${encodeURIComponent(audio.mtime || 0)}`;
   }
@@ -3928,9 +4294,10 @@ class TimelineEditor {
   async showTimelineImageBrowser(targetFrameStart = null, explicitLength = null, options = {}) {
     this.closeTimelineImageBrowser();
     const isReplace = options.mode === "replace";
+    const isReference = options.mode === "reference";
     const targetSegmentId = options.segmentId || null;
-    const title = isReplace ? "Replace Timeline Image" : "Add Timeline Image";
-    const okLabel = isReplace ? "Replace Image" : "Add Image";
+    const title = isReference ? "Add Character Reference" : (isReplace ? "Replace Timeline Image" : "Add Timeline Image");
+    const okLabel = isReference ? "Add Reference" : (isReplace ? "Replace Image" : "Add Image");
 
     const overlay = document.createElement("div");
     overlay.className = "pr-image-browser-dialog";
@@ -4097,7 +4464,7 @@ class TimelineEditor {
       } else if (query) {
         meta.textContent = `${visibleImages.length} of ${availableImages.length} images match. Select one to add.`;
       } else if (!selectedImage) {
-        meta.textContent = `${availableImages.length} images. Select one to add.`;
+        meta.textContent = `${availableImages.length} images. Select one to ${isReference ? "use as a reference" : "add"}.`;
       }
       syncGridVisibility();
     };
@@ -4189,6 +4556,8 @@ class TimelineEditor {
       try {
         if (isReplace) {
           await this.replaceTimelineImageFromBrowser(targetSegmentId, folderSelect.value, selectedImage);
+        } else if (isReference) {
+          await this.addReferenceImageFromBrowser(folderSelect.value, selectedImage);
         } else {
           await this.addTimelineImageFromBrowser(folderSelect.value, selectedImage, targetFrameStart, explicitLength);
         }
@@ -5855,7 +6224,15 @@ class TimelineEditor {
         ...s,
         lane: normalizeAudioLane(s.lane),
         volume: clampVolume(s.volume)
-      }))
+      })),
+      referenceImages: (this.timeline.referenceImages || []).map((ref, index) => ({
+        ...ref,
+        imgObj: undefined,
+        label: normalizeReferenceLabel(ref.label, index),
+        kind: "character",
+        enabled: ref.enabled !== false,
+        strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      })).map(({ imgObj, ...ref }) => ref)
     };
   }
 

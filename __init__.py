@@ -5,11 +5,12 @@ from .speech_length_calculator import SpeechLengthCalculator
 from .load_audio_ui import LoadAudioUI
 from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
-from .ltx_director_guide import LTXDirectorGuide
+from .ltx_director_guide import LTXDirectorGetICLoRAParameters, LTXDirectorGuide
 from .ltx_director_tiled_upscale import LTXDirectorTiledUpscaleGuide, LTXDirectorTiledUpscaleSettings
 from .ltx_action_amplifier import LTXActionAmplifier
 from .ltx_identity_anchor import (
     LTXDirectorApplyIdentityAnchor,
+    LTXDirectorReferenceImage,
     LTXIdentityAnchorCombine,
     LTXIdentityAnchorFace,
     LTXIdentityAnchorLatentAware,
@@ -26,6 +27,7 @@ class PromptRelay(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             LTXDirector,
+            LTXDirectorGetICLoRAParameters,
             LTXDirectorGuide,
             LTXDirectorTiledUpscaleSettings,
             LTXDirectorTiledUpscaleGuide,
@@ -33,6 +35,7 @@ class PromptRelay(ComfyExtension):
             LTXIdentityAnchorLatentAware,
             LTXIdentityAnchorFace,
             LTXIdentityAnchorCombine,
+            LTXDirectorReferenceImage,
             LTXDirectorApplyIdentityAnchor,
         ]
 
@@ -47,6 +50,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadAudioUI": LoadAudioUI,
     "LoadVideoUI": LoadVideoUI,
     "LTXDirector": LTXDirector,
+    "LTXDirectorGetICLoRAParameters": LTXDirectorGetICLoRAParameters,
     "LTXDirectorGuide": LTXDirectorGuide,
     "LTXDirectorTiledUpscaleSettings": LTXDirectorTiledUpscaleSettings,
     "LTXDirectorTiledUpscaleGuide": LTXDirectorTiledUpscaleGuide,
@@ -54,6 +58,7 @@ NODE_CLASS_MAPPINGS = {
     "LTXIdentityAnchorLatentAware": LTXIdentityAnchorLatentAware,
     "LTXIdentityAnchorFace": LTXIdentityAnchorFace,
     "LTXIdentityAnchorCombine": LTXIdentityAnchorCombine,
+    "LTXDirectorReferenceImage": LTXDirectorReferenceImage,
     "LTXDirectorApplyIdentityAnchor": LTXDirectorApplyIdentityAnchor,
 }
 
@@ -65,6 +70,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadAudioUI": "Load Audio UI",
     "LoadVideoUI": "Load Video UI",
     "LTXDirector": "LTX Director",
+    "LTXDirectorGetICLoRAParameters": "LTX Director Get IC-LoRA Parameters",
     "LTXDirectorGuide": "LTX Director Guide",
     "LTXDirectorTiledUpscaleSettings": "LTX Director Tiled Upscale Settings",
     "LTXDirectorTiledUpscaleGuide": "LTX Director Tiled Upscale Guide",
@@ -72,6 +78,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LTXIdentityAnchorLatentAware": "LTX Identity Anchor: Latent Aware",
     "LTXIdentityAnchorFace": "LTX Identity Anchor: Face",
     "LTXIdentityAnchorCombine": "LTX Identity Anchor: Combine",
+    "LTXDirectorReferenceImage": "LTX Director Reference Image",
     "LTXDirectorApplyIdentityAnchor": "LTX Director Apply Identity Anchor",
 }
 

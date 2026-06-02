@@ -51,6 +51,7 @@ You will also need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to their lates
 ## New features
 
 - **LTX Director Prompt Optimizer:** Local VLM prompt generation with SFW/NSFW modes, Hugging Face token support, background jobs, learned progress estimates, editable prompt templates, model unload, image downscaling, and VRAM cleanup.
+- **LTX Director Character References:** Separate character reference images can be added outside the timeline and used per segment with tags like `@image1:character`.
 - **LTX Director Identity Anchors:** New Latent Aware, Face, Combine, and Apply Identity Anchor nodes backed by bundled TenStrip/10S helpers.
 - **LTX Action Amplifier:** Bundled TenStrip/10S token-selective action/motion amplifier for LTX positive conditioning.
 - **LTX Director Tiled Upscale:** New Guide and Settings nodes for tiled latent upscaling with Director guide reapplication.
@@ -62,6 +63,7 @@ You will also need to update ComfyUI-LTXVideo and ComfyUI-KJNodes to their lates
 ## Changes from original
 
 - README updated with LTX Director assets, optimizer docs, identity-anchor docs, tiled-upscale docs, workflow preview, and current tutorial links.
+- Added Director character reference docs for `@imageN:character`, IC-LoRA guide wiring, and optional identity-anchor wiring.
 - Added optional optimizer dependencies in `requirements.txt`.
 - Updated `pyproject.toml` version from `1.3.1` to `1.3.9`.
 - Moved existing nodes into the `WhatDreamsCost` category.
@@ -195,6 +197,7 @@ A Complete Timeline Editor For LTX 2.3. This is the sucessor of my previous node
 - **Fully Functional Timeline Editor:** I spent hours studying various video editors and ended up with this design. If anyone has ideas for improvements let me know! I will adding documentation on all the functions soon.
 - **Prompt Relay integrated:** This unlocks the ability to have granular control over video generation. For more information on Prompt Relay go here, https://gordonchen19.github.io/Prompt-Relay/
 - **Prompt Optimizer:** Generate LTX/Prompt Relay friendly motion prompts from your timeline images, text directions, and segment order. Includes SFW/NSFW modes, local VLM support, Hugging Face token support, learned progress estimates, and Replace/Cancel workflow.
+- **Character References:** Add reference images separately from the timeline, then tag only the segments that should use them with syntax like `@image1:character`.
 - **First, Middle, Last Frame Support:** This has by far the easiest method of creating first/last frames videos. It supports any number of keyframes, and will be the successor of my previous nodes.
 - **Custom Audio Support:** Import, trim, and combine your own audio clips in this node. Enabling custom audio is as simple as clicking 1 button. It is also compatible with every other feature in the node, include first/last frames, t2v, i2v, and prompt relay.
 - **Image to Video:** Part of the goal of this node was to make it easier to do everything, including Image to Video. It has built in resize functionality, and of course all the benifits of the prompt relay and custom audio integration.
@@ -204,6 +207,50 @@ A Complete Timeline Editor For LTX 2.3. This is the sucessor of my previous node
 Download workflows here: https://github.com/WhatDreamsCost/WhatDreamsCost-ComfyUI/tree/main/example_workflows
 
 **Tutorial videos and documentation coming soon**
+
+### LTX Director Character References
+
+Character references are separate from timeline images. Add them from the LTX Director `References` panel, then use the generated tag in any segment prompt that should use that character:
+
+```text
+@image1:character walks into the room and turns toward camera
+```
+
+The tag is Director control syntax. It is removed before the prompt is sent to LTX text encoding, so the segment prompt becomes normal motion/environment text after Director has attached the matching reference image guide.
+
+MVP behavior:
+
+- only `:character` references are supported
+- mood, style, lighting, and other reference kinds are intentionally out of scope
+- references are segment-scoped, so only tagged segments receive the character guide
+- multiple reference images are supported, for example `@image1:character` and `@image2:character`
+- repeated tags in one segment are deduplicated
+- if no reference images and no tags are used, Director behaves like before
+- if a segment uses a missing, disabled, or unsupported reference tag, Director shows an error instead of silently ignoring it
+- the Prompt Optimizer does not use character references yet
+
+When privacy mode is enabled, reference metadata is stored in the encrypted Director timeline payload, and reference thumbnails use the same encrypted/private thumbnail route as timeline images.
+
+Recommended standard LTX 2.3 likeness path:
+
+```text
+LTX Director.positive
+  -> LTX Director Guide.positive
+
+LTX Director.negative
+  -> LTX Director Guide.negative
+
+LTX Director.latent
+  -> LTX Director Guide.latent
+
+LTX Director.guide_data
+  -> LTX Director Guide.guide_data
+
+LTX Director Guide.positive / negative / latent
+  -> sampler positive / negative / latent
+```
+
+For stronger character reference behavior with an IC-LoRA workflow, also wire IC-LoRA parameters into `LTX Director Guide` as described below.
 
 ### LTX Director Prompt Optimizer
 
@@ -282,12 +329,31 @@ To reduce OOM errors, the optimizer releases Comfy's loaded model cache before l
 
 Editable optimizer prompt templates can use placeholders like `{rating}`, `{direction}`, `{continuity}`, `{segment_type}`, `{visual_context}`, and `{text_segment_instruction}`.
 
+### LTX Director Guide IC-LoRA Parameters
+
+`LTX Director Guide` accepts optional IC-LoRA parameters for LTX 2.3 reference workflows that need special guide handling, such as `reference_downscale_factor`. This is the recommended wiring when using Director character references with an IC-LoRA.
+
+Recommended wiring when using an IC-LoRA:
+
+```text
+LoRA Loader.MODEL
+  -> LTX Director Get IC-LoRA Parameters.iclora_model
+
+LTX Director Get IC-LoRA Parameters.iclora_parameters
+  -> LTX Director Guide.iclora_parameters
+```
+
+Use the WhatDreamsCost `LTX Director Get IC-LoRA Parameters` node here instead of ComfyUI's generic extractor. Director's node fails loudly if the LoRA does not include the required `reference_downscale_factor` metadata, so you do not accidentally run a normal guide path while thinking IC-LoRA guide handling is active.
+
+Leave `iclora_parameters` unconnected for regular LTX Director guide workflows.
+
 ### LTX Director Identity Anchors
 
 The identity anchor nodes are optional helper nodes for improving character or face consistency in LTX Director workflows. They are self-contained in this repo and do not require installing 10S Nodes separately.
 
 You can find them in ComfyUI under `LTXVCustom/Identity`:
 - `LTX Director Apply Identity Anchor`
+- `LTX Director Reference Image`
 - `LTX Identity Anchor: Face`
 - `LTX Identity Anchor: Latent Aware`
 - `LTX Identity Anchor: Combine`
@@ -343,6 +409,18 @@ Optional extra inputs on `LTX Director Apply Identity Anchor`:
 - `guide_data`: connect `LTX Director.guide_data` if Latent Aware should use the first Director guide image as its reference.
 - `vae`: connect your LTX VAE when using a reference image or first guide image for Latent Aware energy.
 - `sigmas`: connect a scheduler `SIGMAS` output if your workflow exposes one. If not, leave it empty.
+
+To choose a specific Director character reference for Latent Aware, use `LTX Director Reference Image`:
+
+```text
+LTX Director.guide_data
+  -> LTX Director Reference Image.guide_data
+
+LTX Director Reference Image.image
+  -> LTX Identity Anchor: Latent Aware.reference_image
+```
+
+Set `reference_label` to a Director reference label such as `image1`, or to the reference id. This selector is optional; you can still use only standard Director guides, only 10S identity anchors, or both together.
 
 To use Face and Latent Aware together:
 

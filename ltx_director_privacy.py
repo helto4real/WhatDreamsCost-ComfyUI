@@ -7,8 +7,10 @@ from typing import Any, Mapping
 
 try:
     from .privacy import PrivacyError, decrypt_state, is_encrypted_payload
+    from .ltx_director_references import normalize_reference_images, strip_reference_tags
 except ImportError:  # Allows running tests from the repository root.
     from privacy import PrivacyError, decrypt_state, is_encrypted_payload
+    from ltx_director_references import normalize_reference_images, strip_reference_tags
 
 
 def _as_bool(value: Any) -> bool:
@@ -36,6 +38,7 @@ def _parse_timeline(value: Any) -> dict[str, Any]:
     return {
         "segments": [dict(item) for item in parsed.get("segments", []) if isinstance(item, Mapping)],
         "audioSegments": [dict(item) for item in parsed.get("audioSegments", []) if isinstance(item, Mapping)],
+        "referenceImages": normalize_reference_images(parsed.get("referenceImages", [])),
     }
 
 
@@ -78,7 +81,7 @@ def derive_timeline_outputs(timeline: Any, duration_frames: Any) -> dict[str, st
                 if candidate is not seg and candidate_start >= start + length and candidate_prompt.strip():
                     prompt = candidate_prompt
                     break
-        contiguous_prompts.append(prompt)
+        contiguous_prompts.append(strip_reference_tags(prompt))
 
         pending_gap = 0
         current_cursor = start + length

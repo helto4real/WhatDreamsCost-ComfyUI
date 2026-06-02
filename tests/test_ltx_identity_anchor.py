@@ -131,6 +131,28 @@ class LTXIdentityAnchorTests(unittest.TestCase):
         self.assertIsNone(seen["energy_latent"])
         self.assertEqual(seen["vae"], "vae")
 
+    def test_director_reference_image_selector_matches_label_and_id(self):
+        image_one = object()
+        image_two = object()
+        guide_data = {
+            "reference_images": [
+                {"id": "ref-one", "label": "image1", "image": image_one},
+                {"id": "custom-id", "label": "image2", "image": image_two},
+            ]
+        }
+
+        self.assertIs(ltx_identity_anchor.select_director_reference_image(guide_data, "image1"), image_one)
+        self.assertIs(ltx_identity_anchor.select_director_reference_image(guide_data, "custom-id"), image_two)
+
+    def test_director_reference_image_selector_errors_when_missing(self):
+        guide_data = {"reference_images": [{"id": "ref-one", "label": "image1", "image": object()}]}
+
+        with self.assertRaises(ValueError) as ctx:
+            ltx_identity_anchor.select_director_reference_image(guide_data, "image9")
+
+        self.assertIn("image9", str(ctx.exception))
+        self.assertIn("image1", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

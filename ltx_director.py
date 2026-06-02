@@ -28,6 +28,12 @@ from .patches import detect_model_type, apply_patches
 from .timeline_image_config import resolve_image_path
 from .timeline_audio_config import resolve_audio_path
 from .ltx_director_privacy import resolve_ltx_director_inputs
+from .ltx_director_references import (
+    build_reference_guide_specs,
+    build_segment_reference_usage,
+    reference_usage_errors,
+    strip_reference_tags_from_prompt_list,
+)
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +122,13 @@ def _load_image_tensor(seg: dict) -> torch.Tensor:
         return torch.from_numpy(arr).unsqueeze(0)
     except:
         return torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+
+
+def _reference_image_segment(ref: dict) -> dict:
+    seg = dict(ref)
+    if not seg.get("imageFile") and seg.get("filename"):
+        seg["imageFile"] = seg.get("filename")
+    return seg
 
 
 def _load_video_tail_tensor(seg: dict, frame_count: int) -> torch.Tensor:
@@ -401,6 +414,20 @@ def _resize_image_frames(tensor: torch.Tensor, target_w: int, target_h: int, met
         _resize_image(tensor[i:i + 1], target_w, target_h, method, divisible_by)
         for i in range(tensor.shape[0])
     ], dim=0)
+
+
+def _resize_reference_image_frames(
+    tensor: torch.Tensor,
+    target_w: int,
+    target_h: int,
+    derived_w: int,
+    derived_h: int,
+    use_input_image_size: bool,
+    divisible_by: int,
+) -> torch.Tensor:
+    ref_w = derived_w if use_input_image_size and derived_w > 0 else target_w
+    ref_h = derived_h if use_input_image_size and derived_h > 0 else target_h
+    return _resize_image_frames(tensor, ref_w, ref_h, "pad", divisible_by)
 
 
 def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
@@ -844,14 +871,33 @@ class LTXDirector(io.ComfyNode):
         local_prompts = resolved_inputs["local_prompts"]
         segment_lengths = resolved_inputs["segment_lengths"]
         guide_strength = resolved_inputs["guide_strength"]
+        local_prompts = strip_reference_tags_from_prompt_list(local_prompts)
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
-        guide_data = {"images": [], "insert_frames": [], "strengths": [], "frame_rate": frame_rate}
+        guide_data = {
+            "images": [],
+            "insert_frames": [],
+            "strengths": [],
+            "frame_rate": frame_rate,
+            "reference_images": [],
+        }
         target_w, target_h = _ltx_preset_dimensions(aspect_ratio, orientation, quality_tier)
         derived_w, derived_h = (0, 0) if use_input_image_size else (target_w, target_h)
         source_video_seg = None
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
+            reference_usage = build_segment_reference_usage(tdata, duration_frames)
+            reference_errors = reference_usage_errors(reference_usage)
+            unsupported_tags = reference_errors["unsupported"]
+            unknown_tags = reference_errors["unknown"]
+            if unsupported_tags:
+                log.warning("[PromptRelay] Unsupported reference tags ignored: %s", ", ".join(unsupported_tags))
+            if unknown_tags:
+                raise ValueError(
+                    "LTX Director reference tag(s) were used without matching enabled character reference images: "
+                    f"{', '.join(unknown_tags)}. "
+                    "Add the reference image in the Director References panel or remove the tag from the prompt."
+                )
             source_video_seg = next(
                 (
                     s for s in tdata.get("segments", [])
@@ -879,20 +925,19 @@ class LTXDirector(io.ComfyNode):
             if guide_strength.strip():
                 strengths = [float(x.strip()) for x in guide_strength.split(",") if x.strip()]
 
+            def process_guide_tensor(tensor):
+                src_h, src_w = tensor.shape[1], tensor.shape[2]
+                if use_input_image_size:
+                    return _resize_image_frames(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
+                return _resize_image_frames(tensor, target_w, target_h, resize_method, divisible_by)
+
             for idx, seg in enumerate(img_segs):
                 if seg.get("type") == "source_video":
                     tensor = _load_video_tail_tensor(seg, seg.get("sourceVideoGuideFrames", seg.get("length", 9)))
                 else:
                     tensor = _load_image_tensor(seg)
 
-                # Apply resize
-                src_h, src_w = tensor.shape[1], tensor.shape[2]
-
-                if use_input_image_size:
-                    # Matches the previous custom_width=0/custom_height=0 behavior.
-                    tensor = _resize_image_frames(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
-                else:
-                    tensor = _resize_image_frames(tensor, target_w, target_h, resize_method, divisible_by)
+                tensor = process_guide_tensor(tensor)
 
                 # Apply compression
                 if img_compression > 0:
@@ -909,6 +954,40 @@ class LTXDirector(io.ComfyNode):
                 guide_data["images"].append(tensor)
                 guide_data["insert_frames"].append(int(seg["start"]))
                 guide_data["strengths"].append(float(strength))
+
+            reference_specs = build_reference_guide_specs(tdata, duration_frames)
+            for spec in reference_specs:
+                tensor = _resize_reference_image_frames(
+                    _load_image_tensor(_reference_image_segment(spec)),
+                    target_w,
+                    target_h,
+                    derived_w,
+                    derived_h,
+                    use_input_image_size,
+                    divisible_by,
+                )
+                if img_compression > 0:
+                    tensor = _compress_image_frames(tensor, img_compression)
+
+                strength = float(spec.get("strength", 1.0))
+                insert_frame = int(spec.get("insert_frame", 0))
+                metadata = {
+                    "id": spec.get("id"),
+                    "label": spec.get("label"),
+                    "kind": spec.get("kind", "character"),
+                    "segment_id": spec.get("segment_id"),
+                    "insert_frame": insert_frame,
+                    "strength": strength,
+                    "image": tensor,
+                }
+                guide_data["reference_images"].append(metadata)
+                guide_data["images"].append(tensor)
+                guide_data["insert_frames"].append(insert_frame)
+                guide_data["strengths"].append(strength)
+
+            if guide_data["images"] and (derived_w <= 0 or derived_h <= 0):
+                derived_w = target_w
+                derived_h = target_h
             
             # If no images were loaded from the timeline, create a dummy image at strength 0
             # to prevent artifacts in text-to-video mode.
