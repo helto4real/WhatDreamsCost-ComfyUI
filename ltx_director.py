@@ -128,6 +128,10 @@ def _reference_image_segment(ref: dict) -> dict:
     seg = dict(ref)
     if not seg.get("imageFile") and seg.get("filename"):
         seg["imageFile"] = seg.get("filename")
+    if not seg.get("imageFile") and seg.get("fileName"):
+        seg["imageFile"] = seg.get("fileName")
+    if not seg.get("imageFile") and seg.get("image_file"):
+        seg["imageFile"] = seg.get("image_file")
     return seg
 
 
@@ -425,9 +429,22 @@ def _resize_reference_image_frames(
     use_input_image_size: bool,
     divisible_by: int,
 ) -> torch.Tensor:
-    ref_w = derived_w if use_input_image_size and derived_w > 0 else target_w
-    ref_h = derived_h if use_input_image_size and derived_h > 0 else target_h
-    return _resize_image_frames(tensor, ref_w, ref_h, "pad", divisible_by)
+    src_h, src_w = tensor.shape[1], tensor.shape[2]
+    return _resize_image_frames(tensor, src_w, src_h, "maintain aspect ratio", divisible_by)
+
+
+def _resize_reference_guide_frames(
+    tensor: torch.Tensor,
+    target_w: int,
+    target_h: int,
+    derived_w: int,
+    derived_h: int,
+    use_input_image_size: bool,
+    divisible_by: int,
+) -> torch.Tensor:
+    guide_w = derived_w if use_input_image_size and derived_w > 0 else target_w
+    guide_h = derived_h if use_input_image_size and derived_h > 0 else target_h
+    return _resize_image_frames(tensor, guide_w, guide_h, "pad", divisible_by)
 
 
 def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
@@ -956,9 +973,25 @@ class LTXDirector(io.ComfyNode):
                 guide_data["strengths"].append(float(strength))
 
             reference_specs = build_reference_guide_specs(tdata, duration_frames)
+            if reference_specs:
+                log.warning(
+                    "[PromptRelay] Director character references are inserted as LTX guide frames for likeness. "
+                    "This can make reference-frame artifacts visible at tagged segment starts; tune reference "
+                    "strength if needed."
+                )
             for spec in reference_specs:
-                tensor = _resize_reference_image_frames(
-                    _load_image_tensor(_reference_image_segment(spec)),
+                raw_tensor = _load_image_tensor(_reference_image_segment(spec))
+                identity_tensor = _resize_reference_image_frames(
+                    raw_tensor,
+                    target_w,
+                    target_h,
+                    derived_w,
+                    derived_h,
+                    use_input_image_size,
+                    divisible_by,
+                )
+                guide_tensor = _resize_reference_guide_frames(
+                    raw_tensor,
                     target_w,
                     target_h,
                     derived_w,
@@ -967,7 +1000,8 @@ class LTXDirector(io.ComfyNode):
                     divisible_by,
                 )
                 if img_compression > 0:
-                    tensor = _compress_image_frames(tensor, img_compression)
+                    identity_tensor = _compress_image_frames(identity_tensor, img_compression)
+                    guide_tensor = _compress_image_frames(guide_tensor, img_compression)
 
                 strength = float(spec.get("strength", 1.0))
                 insert_frame = int(spec.get("insert_frame", 0))
@@ -978,10 +1012,10 @@ class LTXDirector(io.ComfyNode):
                     "segment_id": spec.get("segment_id"),
                     "insert_frame": insert_frame,
                     "strength": strength,
-                    "image": tensor,
+                    "image": identity_tensor,
                 }
                 guide_data["reference_images"].append(metadata)
-                guide_data["images"].append(tensor)
+                guide_data["images"].append(guide_tensor)
                 guide_data["insert_frames"].append(insert_frame)
                 guide_data["strengths"].append(strength)
 

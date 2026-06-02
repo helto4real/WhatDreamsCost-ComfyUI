@@ -216,7 +216,13 @@ Character references are separate from timeline images. Add them from the LTX Di
 @image1:character walks into the room and turns toward camera
 ```
 
-The tag is Director control syntax. It is removed before the prompt is sent to LTX text encoding, so the segment prompt becomes normal motion/environment text after Director has attached the matching reference image guide.
+The tag is Director control syntax. It is removed before the prompt is sent to LTX text encoding, so keep the character description in the visible prompt text, for example:
+
+```text
+@image1:character A young woman in a white dress enters from the left side of the frame
+```
+
+Character references have two paths. Director inserts tagged references as normal LTX guide frames for stronger likeness influence, and also keeps them in `guide_data.reference_images` so identity helper nodes can select the same reference separately. The guide frame is padded to the video ratio; the `LTX Director Reference Image` output preserves the reference's own aspect ratio for identity use.
 
 MVP behavior:
 
@@ -226,12 +232,13 @@ MVP behavior:
 - multiple reference images are supported, for example `@image1:character` and `@image2:character`
 - repeated tags in one segment are deduplicated
 - if no reference images and no tags are used, Director behaves like before
-- if a segment uses a missing, disabled, or unsupported reference tag, Director shows an error instead of silently ignoring it
+- if a segment uses a missing or disabled character reference tag, Director reports it instead of silently ignoring it
+- unsupported future kinds like `@image1:style` are out of scope for the MVP and are ignored with a warning
 - the Prompt Optimizer does not use character references yet
 
 When privacy mode is enabled, reference metadata is stored in the encrypted Director timeline payload, and reference thumbnails use the same encrypted/private thumbnail route as timeline images.
 
-Recommended standard LTX 2.3 likeness path:
+Recommended standard LTX 2.3 guide path for timeline images/source-video guides:
 
 ```text
 LTX Director.positive
@@ -250,7 +257,7 @@ LTX Director Guide.positive / negative / latent
   -> sampler positive / negative / latent
 ```
 
-For stronger character reference behavior with an IC-LoRA workflow, also wire IC-LoRA parameters into `LTX Director Guide` as described below.
+Character references use this same `LTX Director Guide` path, so they can visibly influence tagged frames. This may also make the reference frame visible at the tagged segment start; tune reference strength if the artifact is too strong. `LTX Director Reference Image` remains available for the optional identity-anchor wiring below. IC-LoRA parameters still belong on `LTX Director Guide` when applying guide images that need IC-LoRA guide handling.
 
 ### LTX Director Prompt Optimizer
 
@@ -331,9 +338,9 @@ Editable optimizer prompt templates can use placeholders like `{rating}`, `{dire
 
 ### LTX Director Guide IC-LoRA Parameters
 
-`LTX Director Guide` accepts optional IC-LoRA parameters for LTX 2.3 reference workflows that need special guide handling, such as `reference_downscale_factor`. This is the recommended wiring when using Director character references with an IC-LoRA.
+`LTX Director Guide` accepts optional IC-LoRA parameters for LTX 2.3 guide workflows that need special guide handling, such as `reference_downscale_factor`.
 
-Recommended wiring when using an IC-LoRA:
+Recommended wiring when using an IC-LoRA for actual LTX guide images:
 
 ```text
 LoRA Loader.MODEL
