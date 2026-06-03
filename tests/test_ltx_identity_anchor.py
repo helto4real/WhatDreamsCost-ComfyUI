@@ -144,6 +144,16 @@ class LTXIdentityAnchorTests(unittest.TestCase):
         self.assertIs(ltx_identity_anchor.select_director_reference_image(guide_data, "image1"), image_one)
         self.assertIs(ltx_identity_anchor.select_director_reference_image(guide_data, "custom-id"), image_two)
 
+    def test_director_reference_image_selector_returns_timeline_fallback_batch(self):
+        fallback_batch = object()
+        guide_data = {
+            "reference_images": [
+                {"id": "timeline-images", "label": "image1", "kind": "timeline_image", "image": fallback_batch},
+            ]
+        }
+
+        self.assertIs(ltx_identity_anchor.select_director_reference_image(guide_data), fallback_batch)
+
     def test_director_reference_image_selector_errors_when_missing(self):
         guide_data = {"reference_images": [{"id": "ref-one", "label": "image1", "image": object()}]}
 

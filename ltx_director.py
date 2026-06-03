@@ -31,6 +31,7 @@ from .ltx_director_privacy import resolve_ltx_director_inputs
 from .ltx_director_references import (
     build_reference_guide_specs,
     build_segment_reference_usage,
+    normalize_reference_images,
     reference_usage_errors,
     strip_reference_tags_from_prompt_list,
 )
@@ -445,6 +446,32 @@ def _resize_reference_guide_frames(
     guide_w = derived_w if use_input_image_size and derived_w > 0 else target_w
     guide_h = derived_h if use_input_image_size and derived_h > 0 else target_h
     return _resize_image_frames(tensor, guide_w, guide_h, "pad", divisible_by)
+
+
+def _stack_timeline_identity_images(
+    tensors: list[torch.Tensor],
+    target_w: int,
+    target_h: int,
+    derived_w: int,
+    derived_h: int,
+    divisible_by: int,
+) -> torch.Tensor | None:
+    if not tensors:
+        return None
+
+    first_h, first_w = tensors[0].shape[1], tensors[0].shape[2]
+    if all(tensor.shape[1] == first_h and tensor.shape[2] == first_w for tensor in tensors):
+        return torch.cat(tensors, dim=0)
+
+    fallback_w = derived_w if derived_w > 0 else target_w
+    fallback_h = derived_h if derived_h > 0 else target_h
+    return torch.cat(
+        [
+            _resize_image_frames(tensor, fallback_w, fallback_h, "pad", divisible_by)
+            for tensor in tensors
+        ],
+        dim=0,
+    )
 
 
 def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
@@ -942,6 +969,11 @@ class LTXDirector(io.ComfyNode):
             if guide_strength.strip():
                 strengths = [float(x.strip()) for x in guide_strength.split(",") if x.strip()]
 
+            configured_references = normalize_reference_images(tdata.get("referenceImages", []))
+            timeline_identity_tensors = []
+            timeline_identity_insert_frames = []
+            timeline_identity_segment_ids = []
+
             def process_guide_tensor(tensor):
                 src_h, src_w = tensor.shape[1], tensor.shape[2]
                 if use_input_image_size:
@@ -971,6 +1003,36 @@ class LTXDirector(io.ComfyNode):
                 guide_data["images"].append(tensor)
                 guide_data["insert_frames"].append(int(seg["start"]))
                 guide_data["strengths"].append(float(strength))
+                if seg.get("type", "image") == "image":
+                    timeline_identity_tensors.append(tensor)
+                    timeline_identity_insert_frames.append(int(seg["start"]))
+                    timeline_identity_segment_ids.append(seg.get("id"))
+
+            if not configured_references and timeline_identity_tensors:
+                fallback_image = _stack_timeline_identity_images(
+                    timeline_identity_tensors,
+                    target_w,
+                    target_h,
+                    derived_w,
+                    derived_h,
+                    divisible_by,
+                )
+                if fallback_image is not None:
+                    guide_data["reference_images"].append(
+                        {
+                            "id": "timeline-images",
+                            "label": "image1",
+                            "kind": "timeline_image",
+                            "segment_id": ",".join(
+                                str(segment_id)
+                                for segment_id in timeline_identity_segment_ids
+                                if segment_id is not None
+                            ),
+                            "insert_frame": timeline_identity_insert_frames[0] if timeline_identity_insert_frames else 0,
+                            "strength": 1.0,
+                            "image": fallback_image,
+                        }
+                    )
 
             reference_specs = build_reference_guide_specs(tdata, duration_frames)
             if reference_specs:

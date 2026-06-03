@@ -427,7 +427,7 @@ LTX Director Reference Image.image
   -> LTX Identity Anchor: Latent Aware.reference_image
 ```
 
-Set `reference_label` to a Director reference label such as `image1`, or to the reference id. This selector is optional; you can still use only standard Director guides, only 10S identity anchors, or both together.
+Set `reference_label` to a Director reference label such as `image1`, or to the reference id. If no Director reference images are configured, the selector falls back to the in-duration timeline image guides and outputs them as a batched image for identity-anchor use. This selector is optional; you can still use only standard Director guides, only 10S identity anchors, or both together.
 
 To use Face and Latent Aware together:
 
