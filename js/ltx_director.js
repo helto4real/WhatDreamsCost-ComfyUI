@@ -1644,6 +1644,8 @@ class TimelineEditor {
     this._isHovering = false;
     this._isRevealAreaHovering = false;
     this._promptOptimizerActive = false;
+    this._settingsWidgetsRevealActive = false;
+    this._globalPromptRevealHandlers = [];
 
     // Playback state
     this.currentFrame = 0;
@@ -1786,6 +1788,7 @@ class TimelineEditor {
     window.removeEventListener("keydown", this.handleKeyDown, true);
     window.removeEventListener("paste", this.handlePaste, true);
     if (this.handleRevealAreaMouseMove) window.removeEventListener("mousemove", this.handleRevealAreaMouseMove, true);
+    this.clearGlobalPromptRevealHandlers();
   }
 
   getDurationFrames() {
@@ -2026,15 +2029,24 @@ class TimelineEditor {
     return widgetBoolValue(this.useGlobalPromptWidget?.value);
   }
 
+  settingsWidgetsVisibleOnNode() {
+    const displayModeWidget = this.node.widgets?.find(w => w.name === "display_mode");
+    return this._settingsWidgetsRevealActive === true
+      && !!displayModeWidget
+      && displayModeWidget.hidden !== true
+      && !(displayModeWidget.options && displayModeWidget.options.hidden);
+  }
+
   applyGlobalPromptVisibility() {
     const globalPromptWidget = this.getGlobalPromptWidget();
-    const isVisible = this.globalPromptEnabled();
+    const isVisible = this.globalPromptEnabled() || this.settingsWidgetsVisibleOnNode();
     if (!isVisible) {
       for (const element of this.getWidgetTextElements(globalPromptWidget)) {
         this.setElementTextPrivacy(element, false);
       }
     }
     applyGlobalPromptWidgetVisibility(globalPromptWidget, isVisible);
+    this.bindGlobalPromptRevealHandlers(globalPromptWidget, isVisible);
   }
 
   getWidgetTextElements(widget) {
@@ -2059,6 +2071,36 @@ class TimelineEditor {
     ));
   }
 
+  clearGlobalPromptRevealHandlers() {
+    for (const { element, onEnter, onLeave } of this._globalPromptRevealHandlers || []) {
+      element.removeEventListener("mouseenter", onEnter);
+      element.removeEventListener("mouseleave", onLeave);
+    }
+    this._globalPromptRevealHandlers = [];
+  }
+
+  bindGlobalPromptRevealHandlers(globalPromptWidget, isVisible) {
+    this.clearGlobalPromptRevealHandlers();
+    if (!isVisible) return;
+
+    const elements = [];
+    const addElement = (element) => {
+      if (element instanceof HTMLElement && !elements.includes(element)) elements.push(element);
+    };
+    addElement(globalPromptWidget?.element);
+    for (const element of this.getWidgetTextElements(globalPromptWidget)) addElement(element);
+
+    for (const element of elements) {
+      const onEnter = () => this.setRevealAreaHovering(true);
+      const onLeave = () => requestAnimationFrame(() => {
+        this.setRevealAreaHovering(this.isRevealAreaElementHovered());
+      });
+      element.addEventListener("mouseenter", onEnter);
+      element.addEventListener("mouseleave", onLeave);
+      this._globalPromptRevealHandlers.push({ element, onEnter, onLeave });
+    }
+  }
+
   updatePromptPrivacyVisibility() {
     const shouldHide = this.shouldHideTimelineImagesPrompts();
 
@@ -2076,8 +2118,24 @@ class TimelineEditor {
     }
   }
 
+  isGlobalPromptRevealTarget(target) {
+    if (!(target instanceof HTMLElement)) return false;
+    const globalPromptWidget = this.getGlobalPromptWidget();
+    const globalPromptVisible = !!globalPromptWidget
+      && !globalPromptWidget.hidden
+      && !(globalPromptWidget.options && globalPromptWidget.options.hidden);
+    if (!globalPromptVisible) return false;
+
+    if (globalPromptWidget.element instanceof HTMLElement && globalPromptWidget.element.contains(target)) {
+      return true;
+    }
+
+    return this.getWidgetTextElements(globalPromptWidget).some((element) => element.contains(target));
+  }
+
   isEventInsideRevealArea(e) {
     if (this.toolbar?.contains?.(e.target)) return false;
+    if (this.isGlobalPromptRevealTarget(e.target)) return true;
     const wrapperRect = this.wrapper?.getBoundingClientRect?.();
     const toolbarRect = this.toolbar?.getBoundingClientRect?.();
     if (!wrapperRect || !toolbarRect) return false;
@@ -2094,6 +2152,7 @@ class TimelineEditor {
       || this.controlsGroup?.matches?.(":hover")
       || this.propContainer?.matches?.(":hover")
       || this.privacyStatusEl?.matches?.(":hover")
+      || this.getWidgetTextElements(this.getGlobalPromptWidget()).some((element) => element.matches?.(":hover"))
     );
   }
 
@@ -6729,7 +6788,9 @@ class TimelineEditor {
         }
       }
     }
+    this._settingsWidgetsRevealActive = false;
     this.updateWidgetVisibility();
+    this.applyGlobalPromptVisibility();
 
     // Workaround: toggle display mode to force ComfyUI to refresh the node
     if (this.displayModeWidget) {
@@ -6742,6 +6803,7 @@ class TimelineEditor {
       this.displayModeWidget.value = origVal;
       if (this.displayModeWidget.callback) this.displayModeWidget.callback(origVal);
     }
+    this.updatePromptPrivacyVisibility();
   }
 
   // Restore all settings widgets on the node.
@@ -6759,7 +6821,9 @@ class TimelineEditor {
       delete w.computeSize;
       if (w.element) w.element.style.display = "";
     }
+    this._settingsWidgetsRevealActive = true;
     this.updateWidgetVisibility();
+    this.applyGlobalPromptVisibility();
 
     // Workaround: toggle display mode to force ComfyUI to refresh the node
     if (this.displayModeWidget) {
@@ -6772,6 +6836,7 @@ class TimelineEditor {
       this.displayModeWidget.value = origVal;
       if (this.displayModeWidget.callback) this.displayModeWidget.callback(origVal);
     }
+    this.updatePromptPrivacyVisibility();
   }
 
   _makeSettingRow(label, inputEl) {
