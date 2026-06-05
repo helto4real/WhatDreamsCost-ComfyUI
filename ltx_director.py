@@ -508,29 +508,106 @@ def _dedupe_reference_specs(reference_specs: list[dict]) -> list[dict]:
     return deduped
 
 
-def _crop_latent_to_frame_count(latent, frame_count):
+def _crop_latent_to_frame_count(latent, frame_count, hidden_reference_count=0):
     try:
-        frame_count = int(frame_count)
+        metadata_target = int(frame_count)
     except (TypeError, ValueError):
         return latent
-    if frame_count <= 0 or not isinstance(latent, dict):
+    try:
+        hidden_reference_count = max(0, int(hidden_reference_count or 0))
+    except (TypeError, ValueError):
+        hidden_reference_count = 0
+    if metadata_target <= 0 or not isinstance(latent, dict):
         return latent
 
     cropped = latent.copy()
 
+    def tensor_frame_count(tensor):
+        if not torch.is_tensor(tensor):
+            return None
+        if tensor.ndim == 5:
+            return int(tensor.shape[2])
+        if tensor.ndim in (3, 4):
+            return int(tensor.shape[0])
+        return None
+
     def crop_tensor(tensor):
         if not torch.is_tensor(tensor):
             return tensor
+        current_frames = tensor_frame_count(tensor)
+        if current_frames is None:
+            return tensor
+        keep_frames = min(target_frames, current_frames)
         if tensor.ndim == 5:
-            return tensor[:, :, : min(frame_count, tensor.shape[2]), :, :]
+            try:
+                return torch.narrow(tensor, 2, 0, keep_frames)
+            except Exception:
+                return tensor[:, :, :keep_frames, :, :]
         if tensor.ndim in (3, 4):
-            return tensor[: min(frame_count, tensor.shape[0])]
+            try:
+                return torch.narrow(tensor, 0, 0, keep_frames)
+            except Exception:
+                return tensor[:keep_frames]
         return tensor
 
+    def first_video_stream(value):
+        if getattr(value, "is_nested", False):
+            try:
+                streams = list(value.unbind())
+            except Exception:
+                return None
+            return streams[0] if streams else None
+        return value
+
+    def crop_value(value):
+        if getattr(value, "is_nested", False):
+            try:
+                streams = list(value.unbind())
+            except Exception:
+                return value
+            if not streams:
+                return value
+            streams[0] = crop_tensor(streams[0])
+            try:
+                return type(value)(streams)
+            except Exception:
+                return value
+        return crop_tensor(value)
+
+    before_frames = tensor_frame_count(first_video_stream(cropped.get("samples")))
+    candidate_targets = [metadata_target]
+    if hidden_reference_count > 0 and before_frames is not None:
+        tail_count_target = before_frames - hidden_reference_count
+        if tail_count_target > 0:
+            candidate_targets.append(tail_count_target)
+    target_frames = min(candidate_targets)
+
     if "samples" in cropped:
-        cropped["samples"] = crop_tensor(cropped["samples"])
+        cropped["samples"] = crop_value(cropped["samples"])
     if "noise_mask" in cropped:
-        cropped["noise_mask"] = crop_tensor(cropped["noise_mask"])
+        cropped["noise_mask"] = crop_value(cropped["noise_mask"])
+    after_frames = tensor_frame_count(first_video_stream(cropped.get("samples")))
+    if before_frames is not None and after_frames is not None:
+        if before_frames <= target_frames:
+            log.warning(
+                "[PromptRelay] LTX Director Crop Reference Tail received %d latent frames; "
+                "metadata_target=%d, hidden_reference_count=%d, chosen_target=%d. "
+                "No reference tail was removed.",
+                before_frames,
+                metadata_target,
+                hidden_reference_count,
+                target_frames,
+            )
+        else:
+            log.info(
+                "[PromptRelay] LTX Director Crop Reference Tail cropped video latent frames "
+                "from %d to %d; metadata_target=%d, hidden_reference_count=%d, chosen_target=%d.",
+                before_frames,
+                after_frames,
+                metadata_target,
+                hidden_reference_count,
+                target_frames,
+            )
     return cropped
 
 
@@ -1355,17 +1432,29 @@ class LTXDirectorCropReferenceTail(io.ComfyNode):
     def execute(cls, latent, guide_data) -> io.NodeOutput:
         clean_latent_frames = None
         clean_pixel_frames = 0
+        hidden_reference_count = 0
         if isinstance(guide_data, dict):
             clean_latent_frames = guide_data.get("clean_latent_frames")
+            try:
+                hidden_reference_count = int(guide_data.get("hidden_reference_count") or 0)
+            except (TypeError, ValueError):
+                hidden_reference_count = 0
             try:
                 clean_pixel_frames = int(guide_data.get("clean_pixel_frames") or 0)
             except (TypeError, ValueError):
                 clean_pixel_frames = 0
 
         if clean_latent_frames is None:
+            log.warning(
+                "[PromptRelay] LTX Director Crop Reference Tail could not find clean_latent_frames "
+                "in guide_data; latent was left unchanged."
+            )
             return io.NodeOutput(latent, clean_pixel_frames)
 
-        return io.NodeOutput(_crop_latent_to_frame_count(latent, clean_latent_frames), clean_pixel_frames)
+        return io.NodeOutput(
+            _crop_latent_to_frame_count(latent, clean_latent_frames, hidden_reference_count),
+            clean_pixel_frames,
+        )
 
 
 NODE_CLASS_MAPPINGS = {

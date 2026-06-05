@@ -113,6 +113,15 @@ def _load_ltx_director():
 ltx_director = _load_ltx_director()
 
 
+class FakeNestedTensor:
+    def __init__(self, tensors):
+        self.tensors = list(tensors)
+        self.is_nested = True
+
+    def unbind(self):
+        return self.tensors
+
+
 class LTXDirectorReferenceResizeTests(unittest.TestCase):
     def _execute_director_for_guide_data(
         self,
@@ -807,6 +816,69 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 3, 2, 2))
         self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 3, 1, 1))
         self.assertTrue(torch.equal(cropped["samples"], latent["samples"][:, :, :3]))
+
+    def test_crop_reference_tail_uses_hidden_count_when_metadata_is_too_long(self):
+        latent = {
+            "samples": torch.zeros((1, 128, 5, 2, 2), dtype=torch.float32),
+            "noise_mask": torch.ones((1, 1, 5, 1, 1), dtype=torch.float32),
+        }
+        guide_data = {"clean_latent_frames": 5, "clean_pixel_frames": 33, "hidden_reference_count": 1}
+
+        cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
+
+        self.assertEqual(clean_pixel_frames, 33)
+        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 4, 2, 2))
+        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 4, 1, 1))
+
+    def test_crop_reference_tail_keeps_normal_clean_metadata_target(self):
+        latent = {
+            "samples": torch.zeros((1, 128, 5, 2, 2), dtype=torch.float32),
+            "noise_mask": torch.ones((1, 1, 5, 1, 1), dtype=torch.float32),
+        }
+        guide_data = {"clean_latent_frames": 4, "clean_pixel_frames": 25, "hidden_reference_count": 1}
+
+        cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
+
+        self.assertEqual(clean_pixel_frames, 25)
+        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 4, 2, 2))
+        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 4, 1, 1))
+
+    def test_crop_reference_tail_crops_nested_video_stream_only(self):
+        video = torch.arange(1 * 128 * 5 * 2 * 2, dtype=torch.float32).reshape(1, 128, 5, 2, 2)
+        audio = torch.ones((1, 32, 11, 4), dtype=torch.float32)
+        video_mask = torch.ones((1, 1, 5, 1, 1), dtype=torch.float32)
+        audio_mask = torch.ones_like(audio)
+        latent = {
+            "samples": FakeNestedTensor((video, audio)),
+            "noise_mask": FakeNestedTensor((video_mask, audio_mask)),
+        }
+        guide_data = {"clean_latent_frames": 3, "clean_pixel_frames": 17}
+
+        cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
+        cropped_video, cropped_audio = cropped["samples"].unbind()
+        cropped_video_mask, cropped_audio_mask = cropped["noise_mask"].unbind()
+
+        self.assertEqual(clean_pixel_frames, 17)
+        self.assertIsInstance(cropped["samples"], FakeNestedTensor)
+        self.assertEqual(tuple(cropped_video.shape), (1, 128, 3, 2, 2))
+        self.assertTrue(torch.equal(cropped_video, video[:, :, :3]))
+        self.assertIs(cropped_audio, audio)
+        self.assertEqual(tuple(cropped_video_mask.shape), (1, 1, 3, 1, 1))
+        self.assertTrue(torch.equal(cropped_video_mask, video_mask[:, :, :3]))
+        self.assertIs(cropped_audio_mask, audio_mask)
+
+    def test_crop_reference_tail_leaves_already_cropped_latent_shape_unchanged(self):
+        latent = {
+            "samples": torch.zeros((1, 128, 3, 2, 2), dtype=torch.float32),
+            "noise_mask": torch.ones((1, 1, 3, 1, 1), dtype=torch.float32),
+        }
+        guide_data = {"clean_latent_frames": 3, "clean_pixel_frames": 17}
+
+        cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
+
+        self.assertEqual(clean_pixel_frames, 17)
+        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 3, 2, 2))
+        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 3, 1, 1))
 
     def test_crop_reference_tail_leaves_latent_unchanged_without_metadata(self):
         latent = {"samples": torch.zeros((1, 128, 5, 2, 2), dtype=torch.float32)}
