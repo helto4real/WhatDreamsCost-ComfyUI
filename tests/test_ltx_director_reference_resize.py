@@ -431,6 +431,19 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
             encode_calls[0]["local_prompts"],
             "a young woman in a white dress A young woman in a white dress enters from the left.",
         )
+        debug = json.loads(result[-1])
+        self.assertEqual(
+            debug["pre_encode"]["local_prompts_final"],
+            "a young woman in a white dress A young woman in a white dress enters from the left.",
+        )
+        self.assertEqual(debug["sections"][0]["segment_id"], "uses-ref")
+        self.assertEqual(
+            debug["sections"][0]["substitutions"][0]["inserted_description"],
+            "a young woman in a white dress",
+        )
+        self.assertEqual(debug["references"][0]["description"], "a young woman in a white dress")
+        self.assertTrue(debug["references"][0]["hidden_tail"])
+        self.assertEqual(debug["references"][0]["insert_frame"], 16)
 
     def test_timeline_images_still_populate_normal_guides_with_references_present(self):
         timeline_image = torch.full((1, 160, 320, 3), 0.25, dtype=torch.float32)
@@ -611,6 +624,346 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         latent = result[2]
         self.assertEqual(guide_data["hidden_reference_count"], 0)
         self.assertEqual(tuple(latent["samples"].shape), (1, 128, 2, 10, 18))
+
+    def test_timeline_prompt_tags_drive_caption_substitution_when_widget_is_stripped(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "description": "a blonde woman in an olive jacket",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character enters"},
+            ],
+        }
+        seen = {}
+
+        def fake_encode(model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon):
+            seen["local_prompts"] = local_prompts
+            return "patched", "conditioning"
+
+        with (
+            mock.patch.object(ltx_director, "_load_image_tensor", return_value=reference),
+            mock.patch.object(ltx_director, "_encode_relay", side_effect=fake_encode),
+            mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
+            mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
+        ):
+            result = ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="",
+                duration_frames=8,
+                duration_seconds=1.0,
+                timeline_data=json.dumps(timeline),
+                local_prompts="enters",
+                segment_lengths="8",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
+
+        self.assertEqual(seen["local_prompts"], "a blonde woman in an olive jacket enters")
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["raw_inputs"]["local_prompts_original"], "@image1:character enters")
+        self.assertEqual(debug["pre_encode"]["local_prompts_final"], "a blonde woman in an olive jacket enters")
+        self.assertIn("derived from timeline_data", " ".join(debug["diagnostics"]["notes"]))
+
+    def test_privacy_resolved_timeline_prompts_drive_caption_substitution_when_widget_is_stripped(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "description": "a blonde woman in an olive jacket",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character enters"},
+            ],
+        }
+        seen = {}
+
+        def fake_encode(model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon):
+            seen["local_prompts"] = local_prompts
+            return "patched", "conditioning"
+
+        with (
+            mock.patch.object(ltx_director, "_load_image_tensor", return_value=reference),
+            mock.patch.object(ltx_director, "_encode_relay", side_effect=fake_encode),
+            mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
+            mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
+        ):
+            result = ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="",
+                duration_frames=8,
+                duration_seconds=1.0,
+                timeline_data=json.dumps(timeline),
+                local_prompts="enters",
+                segment_lengths="8",
+                privacy_mode=True,
+                privacy_payload="stubbed",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
+
+        self.assertEqual(seen["local_prompts"], "a blonde woman in an olive jacket enters")
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["raw_inputs"]["local_prompts_original"], "@image1:character enters")
+
+    def test_timeline_prompt_derivation_keeps_source_video_fallback(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        source_video = torch.full((1, 96, 160, 3), 0.85, dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "description": "a blonde woman in an olive jacket",
+                },
+            ],
+            "segments": [
+                {"id": "video", "type": "source_video", "start": 0, "length": 8, "videoFile": "source.mp4", "prompt": ""},
+                {"id": "a", "type": "text", "start": 8, "length": 8, "prompt": "@image1:character enters"},
+            ],
+        }
+        seen = {}
+
+        def fake_encode(model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon):
+            seen["local_prompts"] = local_prompts
+            return "patched", "conditioning"
+
+        def fake_load_video_tail(segment, frame_count):
+            return source_video
+
+        with (
+            mock.patch.object(ltx_director, "_load_image_tensor", return_value=reference),
+            mock.patch.object(ltx_director, "_load_video_tail_tensor", side_effect=fake_load_video_tail),
+            mock.patch.object(ltx_director, "_encode_relay", side_effect=fake_encode),
+            mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
+            mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
+        ):
+            result = ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="",
+                duration_frames=16,
+                duration_seconds=1.0,
+                timeline_data=json.dumps(timeline),
+                local_prompts="enters | enters",
+                segment_lengths="8,8",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
+
+        expected = "a blonde woman in an olive jacket enters | a blonde woman in an olive jacket enters"
+        self.assertEqual(seen["local_prompts"], expected)
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["pre_encode"]["local_prompts_final"], expected)
+
+    def test_local_prompt_widget_is_fallback_when_timeline_data_is_empty(self):
+        seen = {}
+
+        def fake_encode(model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon):
+            seen["local_prompts"] = local_prompts
+            return "patched", "conditioning"
+
+        with (
+            mock.patch.object(ltx_director, "_encode_relay", side_effect=fake_encode),
+            mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
+            mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
+        ):
+            result = ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="",
+                duration_frames=8,
+                duration_seconds=1.0,
+                timeline_data="",
+                local_prompts="Fallback prompt",
+                segment_lengths="8",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
+
+        self.assertEqual(seen["local_prompts"], "Fallback prompt")
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["raw_inputs"]["local_prompts_original"], "Fallback prompt")
+        self.assertEqual(debug["pre_encode"]["local_prompts_final"], "Fallback prompt")
+
+    def test_debug_json_strips_empty_reference_descriptions(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "description": "",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character enters"},
+            ],
+        }
+
+        result = self._execute_director_for_guide_data(
+            timeline,
+            {"ref.png": reference},
+            duration_frames=8,
+            local_prompts="@image1:character enters",
+            segment_lengths="8",
+            return_full_result=True,
+        )
+
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["pre_encode"]["local_prompts_final"], "enters")
+        self.assertEqual(debug["sections"][0]["final_prompt"], "enters")
+        self.assertEqual(debug["sections"][0]["substitutions"][0]["inserted_description"], "")
+        self.assertNotIn("@image1:character", debug["pre_encode"]["local_prompts_final"])
+
+    def test_debug_json_summarizes_repeated_and_multiple_references(self):
+        reference_one = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        reference_two = torch.full((1, 200, 100, 3), 0.5, dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "one.png",
+                    "description": "a blonde woman in an olive jacket",
+                },
+                {
+                    "id": "ref-two",
+                    "label": "image2",
+                    "kind": "character",
+                    "imageFile": "two.png",
+                    "description": "a dark-haired man in a navy coat",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character enters"},
+                {"id": "b", "type": "text", "start": 8, "length": 8, "prompt": "@image1:character greets @image2:character"},
+            ],
+        }
+
+        result = self._execute_director_for_guide_data(
+            timeline,
+            {"one.png": reference_one, "two.png": reference_two},
+            duration_frames=16,
+            local_prompts="@image1:character enters | @image1:character greets @image2:character",
+            segment_lengths="8,8",
+            return_full_result=True,
+        )
+
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["latent_timing"]["hidden_reference_count"], 2)
+        self.assertEqual(
+            [ref["label"] for ref in debug["references"]],
+            ["image1", "image2"],
+        )
+        self.assertEqual(debug["references"][0]["used_by_segments"], ["a", "b"])
+        self.assertEqual(debug["references"][1]["used_by_segments"], ["b"])
+        self.assertEqual(debug["references"][0]["insert_frame"], 24)
+        self.assertEqual(debug["references"][1]["insert_frame"], 32)
+        self.assertEqual(
+            debug["sections"][1]["final_prompt"],
+            "a blonde woman in an olive jacket greets a dark-haired man in a navy coat",
+        )
+        self.assertEqual(len(debug["sections"][1]["substitutions"]), 2)
+
+    def test_debug_json_includes_final_global_prompt_with_reference_description(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "description": "a blonde woman in an olive jacket",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "enters"},
+            ],
+        }
+
+        with (
+            mock.patch.object(ltx_director, "_load_image_tensor", return_value=reference),
+            mock.patch.object(ltx_director, "_encode_relay", return_value=("patched", "conditioning")),
+            mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
+            mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
+        ):
+            result = ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="Cinematic story about @image1:character",
+                duration_frames=8,
+                duration_seconds=1.0,
+                timeline_data=json.dumps(timeline),
+                local_prompts="enters",
+                segment_lengths="8",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
+
+        debug = json.loads(result[-1])
+        self.assertEqual(
+            debug["pre_encode"]["global_prompt_final"],
+            "Cinematic story about a blonde woman in an olive jacket",
+        )
+        self.assertIn("@image1:character", debug["raw_inputs"]["global_prompt_original"])
+
+    def test_debug_json_excludes_image_payload_and_privacy_payload(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "imageB64": "data:image/png;base64,SECRET_IMAGE_DATA",
+                    "description": "a blonde woman",
+                },
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character enters"},
+            ],
+        }
+
+        result = self._execute_director_for_guide_data(
+            timeline,
+            {"ref.png": reference},
+            duration_frames=8,
+            local_prompts="@image1:character enters",
+            segment_lengths="8",
+            return_full_result=True,
+        )
+
+        debug_text = result[-1]
+        self.assertNotIn("SECRET_IMAGE_DATA", debug_text)
+        self.assertNotIn("imageB64", debug_text)
+        self.assertNotIn("privacy_payload", debug_text)
+        self.assertNotIn('"image"', debug_text)
 
     def test_reference_tags_are_stripped_before_encoding(self):
         reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)

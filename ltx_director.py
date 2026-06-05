@@ -4,6 +4,7 @@ import base64
 import io as _io
 import math
 from collections import deque
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -148,6 +149,307 @@ def _reference_image_segment(ref: dict) -> dict:
     if not seg.get("imageFile") and seg.get("image_file"):
         seg["imageFile"] = seg.get("image_file")
     return seg
+
+
+def _debug_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _split_debug_prompt_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    return [part.strip() for part in str(value).split("|")]
+
+
+def _safe_debug_reference(ref: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "id": ref.get("id"),
+        "label": ref.get("label"),
+        "kind": ref.get("kind"),
+        "enabled": bool(ref.get("enabled", True)),
+        "strength": float(ref.get("strength", 1.0)),
+        "description": str(ref.get("description") or "").strip(),
+    }
+
+
+def _reference_substitutions_for_debug(
+    prompt: Any, references: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_label = {
+        ref.get("label"): ref
+        for ref in references
+        if ref.get("enabled", True)
+    }
+    substitutions = []
+    for tag in parse_reference_tags(prompt):
+        if not tag.get("supported"):
+            continue
+        ref = by_label.get(tag.get("label"))
+        if ref is None:
+            continue
+        description = str(ref.get("description") or "").strip()
+        substitutions.append(
+            {
+                "token": tag.get("token"),
+                "label": tag.get("label"),
+                "id": ref.get("id"),
+                "kind": ref.get("kind", "character"),
+                "inserted_description": description,
+            }
+        )
+    return substitutions
+
+
+def _timeline_prompt_segments_for_debug(
+    timeline: Any, duration_frames: Any
+) -> list[dict[str, Any]]:
+    if not isinstance(timeline, Mapping):
+        return []
+
+    duration = _debug_int(duration_frames, 0)
+    segments = []
+    for segment in timeline.get("segments", []):
+        if not isinstance(segment, Mapping):
+            continue
+        start = _debug_int(segment.get("start"), 0)
+        if duration > 0 and start >= duration:
+            continue
+        if "prompt" not in segment:
+            continue
+        segments.append(segment)
+    return sorted(segments, key=lambda item: _debug_int(item.get("start"), 0))
+
+
+def _derive_timeline_local_prompts_preserving_reference_tags(
+    timeline: Any, duration_frames: Any
+) -> str | None:
+    if not isinstance(timeline, Mapping):
+        return None
+
+    sorted_segments = sorted(
+        [
+            segment
+            for segment in timeline.get("segments", [])
+            if isinstance(segment, Mapping)
+        ],
+        key=lambda segment: _debug_int(segment.get("start"), 0),
+    )
+    duration = max(1, _debug_int(duration_frames, 1))
+    prompts = []
+
+    for segment in sorted_segments:
+        start = _debug_int(segment.get("start"), 0)
+        length = max(0, _debug_int(segment.get("length"), 0))
+        if start >= duration:
+            break
+
+        prompt = str(segment.get("prompt") or "")
+        if segment.get("type") == "source_video" and not prompt.strip():
+            for candidate in sorted_segments:
+                candidate_start = _debug_int(candidate.get("start"), 0)
+                candidate_prompt = str(candidate.get("prompt") or "")
+                if (
+                    candidate is not segment
+                    and candidate_start >= start + length
+                    and candidate_prompt.strip()
+                ):
+                    prompt = candidate_prompt
+                    break
+        prompts.append(prompt)
+
+    if not prompts:
+        return None
+    return " | ".join(prompts)
+
+
+def _safe_debug_reference_tag(tag: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "token": tag.get("token"),
+        "label": tag.get("label"),
+        "kind": tag.get("kind"),
+        "supported": bool(tag.get("supported")),
+    }
+
+
+def _build_director_debug_json(
+    *,
+    raw_global_prompt: Any,
+    raw_local_prompts: Any,
+    final_global_prompt: Any,
+    final_local_prompts: Any,
+    segment_lengths: Any,
+    epsilon: Any,
+    timeline: Any,
+    configured_references: list[dict[str, Any]],
+    reference_usage: list[dict[str, Any]],
+    guide_data: dict[str, Any],
+    duration_frames: Any,
+    clean_pixel_frames: int,
+    clean_latent_frames: int,
+    hidden_reference_count: int,
+    total_latents: int,
+    ltxv_length: int,
+    optional_latent_used: bool,
+    frame_rate: float,
+    aspect_ratio: Any,
+    orientation: Any,
+    quality_tier: Any,
+    resize_method: Any,
+    divisible_by: Any,
+    use_input_image_size: bool,
+    diagnostics: list[str],
+    unsupported_tags: list[str],
+) -> str:
+    final_parts = _split_debug_prompt_list(final_local_prompts)
+    raw_parts = _split_debug_prompt_list(raw_local_prompts)
+    length_parts = [
+        part.strip()
+        for part in str(segment_lengths or "").split(",")
+        if part.strip()
+    ]
+    prompt_segments = _timeline_prompt_segments_for_debug(timeline, duration_frames)
+
+    section_count = max(len(final_parts), len(raw_parts), len(prompt_segments))
+    sections = []
+    for index in range(section_count):
+        segment = prompt_segments[index] if index < len(prompt_segments) else {}
+        original_prompt = (
+            str(segment.get("prompt") or "")
+            if segment
+            else (raw_parts[index] if index < len(raw_parts) else "")
+        )
+        if (
+            segment
+            and segment.get("type") == "source_video"
+            and not original_prompt.strip()
+            and index < len(raw_parts)
+        ):
+            original_prompt = raw_parts[index]
+        sections.append(
+            {
+                "index": index,
+                "segment_id": segment.get("id") if segment else None,
+                "type": segment.get("type", "text") if segment else None,
+                "start": _debug_int(segment.get("start"), 0) if segment else None,
+                "length": (
+                    _debug_int(segment.get("length"), 0)
+                    if segment
+                    else (_debug_int(length_parts[index], 0) if index < len(length_parts) else None)
+                ),
+                "original_prompt": original_prompt,
+                "final_prompt": final_parts[index] if index < len(final_parts) else "",
+                "reference_tags": [
+                    _safe_debug_reference_tag(tag)
+                    for tag in parse_reference_tags(original_prompt)
+                ],
+                "substitutions": _reference_substitutions_for_debug(
+                    original_prompt, configured_references
+                ),
+            }
+        )
+
+    used_by_label: dict[str, list[Any]] = {}
+    for usage in reference_usage:
+        segment_id = usage.get("segment_id")
+        for ref in usage.get("references", []):
+            label = ref.get("label")
+            if not label:
+                continue
+            used_by_label.setdefault(label, [])
+            if segment_id not in used_by_label[label]:
+                used_by_label[label].append(segment_id)
+
+    hidden_metadata = {}
+    for ref in guide_data.get("reference_images", []):
+        if not isinstance(ref, Mapping):
+            continue
+        key = ref.get("id") or ref.get("label")
+        if not key:
+            continue
+        hidden_metadata[key] = {
+            "hidden_tail": bool(ref.get("hidden_tail", False)),
+            "insert_frame": ref.get("insert_frame"),
+            "clean_latent_frames": ref.get("clean_latent_frames"),
+            "clean_pixel_frames": ref.get("clean_pixel_frames"),
+        }
+
+    references = []
+    for ref in configured_references:
+        clean_ref = _safe_debug_reference(ref)
+        metadata = hidden_metadata.get(ref.get("id")) or hidden_metadata.get(ref.get("label")) or {}
+        clean_ref.update(metadata)
+        clean_ref["used_by_segments"] = used_by_label.get(ref.get("label"), [])
+        references.append(clean_ref)
+
+    guide_refs_by_frame: dict[int, Mapping[str, Any]] = {}
+    for ref in guide_data.get("reference_images", []):
+        if isinstance(ref, Mapping) and ref.get("insert_frame") is not None:
+            guide_refs_by_frame[_debug_int(ref.get("insert_frame"), 0)] = ref
+
+    guide_summaries = []
+    insert_frames = list(guide_data.get("insert_frames", []))
+    strengths = list(guide_data.get("strengths", []))
+    for index, frame in enumerate(insert_frames):
+        frame_int = _debug_int(frame, 0)
+        ref = guide_refs_by_frame.get(frame_int)
+        guide_summaries.append(
+            {
+                "index": index,
+                "kind": ref.get("kind") if ref else "timeline_guide",
+                "source_label": ref.get("label") if ref else None,
+                "source_id": ref.get("id") if ref else None,
+                "hidden_tail": bool(ref.get("hidden_tail", False)) if ref else False,
+                "insert_frame": frame_int,
+                "strength": float(strengths[index]) if index < len(strengths) else None,
+            }
+        )
+
+    debug = {
+        "pre_encode": {
+            "global_prompt_final": str(final_global_prompt or ""),
+            "local_prompts_final": str(final_local_prompts or ""),
+            "segment_lengths": str(segment_lengths or ""),
+            "epsilon": float(_safe_float(epsilon, 1e-3)),
+        },
+        "sections": sections,
+        "references": references,
+        "guides": {
+            "insert_frames": insert_frames,
+            "strengths": strengths,
+            "items": guide_summaries,
+        },
+        "latent_timing": {
+            "duration_frames": _debug_int(duration_frames, 0),
+            "clean_pixel_frames": int(clean_pixel_frames),
+            "clean_latent_frames": int(clean_latent_frames),
+            "hidden_reference_count": int(hidden_reference_count),
+            "total_latent_frames": int(total_latents),
+            "ltxv_length": int(ltxv_length),
+            "optional_latent_used": bool(optional_latent_used),
+        },
+        "settings": {
+            "frame_rate": float(frame_rate),
+            "aspect_ratio": str(aspect_ratio),
+            "orientation": str(orientation),
+            "quality_tier": str(quality_tier),
+            "resize_method": str(resize_method),
+            "divisible_by": _debug_int(divisible_by, 32),
+            "use_input_image_size": bool(use_input_image_size),
+        },
+        "diagnostics": {
+            "unsupported_reference_tags_ignored": list(unsupported_tags),
+            "unknown_reference_tags_raise_error": True,
+            "notes": list(diagnostics),
+        },
+        "raw_inputs": {
+            "global_prompt_original": str(raw_global_prompt or ""),
+            "local_prompts_original": str(raw_local_prompts or ""),
+        },
+    }
+    return json.dumps(debug, indent=2, sort_keys=True, default=str)
 
 
 def _load_video_tail_tensor(seg: dict, frame_count: int) -> torch.Tensor:
@@ -1244,6 +1546,10 @@ class LTXDirector(io.ComfyNode):
                     display_name="source_video_frame_count",
                     tooltip="Number of frames decoded from the source video.",
                 ),
+                io.String.Output(
+                    display_name="debug_json",
+                    tooltip="Pretty JSON with final prompts, reference substitutions, guide timing, and Director settings used before encoding.",
+                ),
             ],
         )
 
@@ -1297,6 +1603,8 @@ class LTXDirector(io.ComfyNode):
         local_prompts = resolved_inputs["local_prompts"]
         segment_lengths = resolved_inputs["segment_lengths"]
         guide_strength = resolved_inputs["guide_strength"]
+        raw_global_prompt = global_prompt
+        raw_local_prompts = local_prompts
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {
@@ -1316,11 +1624,27 @@ class LTXDirector(io.ComfyNode):
         derived_w, derived_h = (0, 0) if use_input_image_size else (target_w, target_h)
         source_video_seg = None
         hidden_reference_count = 0
+        tdata = {}
+        configured_references = []
+        reference_usage = []
+        unsupported_tags = []
+        diagnostics = []
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
             configured_references = normalize_reference_images(
                 tdata.get("referenceImages", [])
             )
+            timeline_local_prompts = (
+                _derive_timeline_local_prompts_preserving_reference_tags(
+                    tdata, duration_frames
+                )
+            )
+            if timeline_local_prompts is not None:
+                local_prompts = timeline_local_prompts
+                raw_local_prompts = timeline_local_prompts
+                diagnostics.append(
+                    "Local prompts were derived from timeline_data so reference caption tags could be substituted before encoding."
+                )
             reference_usage = build_segment_reference_usage(tdata, duration_frames)
             reference_errors = reference_usage_errors(reference_usage)
             enabled_reference_labels = {
@@ -1341,6 +1665,10 @@ class LTXDirector(io.ComfyNode):
                 log.warning(
                     "[PromptRelay] Unsupported reference tags ignored: %s",
                     ", ".join(unsupported_tags),
+                )
+                diagnostics.append(
+                    "Unsupported reference tags were ignored: "
+                    + ", ".join(unsupported_tags)
                 )
             if unknown_tags:
                 raise LTXDirectorReferenceError(
@@ -1463,6 +1791,9 @@ class LTXDirector(io.ComfyNode):
             hidden_reference_count = len(reference_specs)
             guide_data["hidden_reference_count"] = hidden_reference_count
             if reference_specs:
+                diagnostics.append(
+                    "Character references are inserted as hidden tail guide frames; crop with LTX Director Crop Reference Tail before decode."
+                )
                 log.warning(
                     "[PromptRelay] Director character references are inserted as hidden tail guide frames "
                     "for likeness. Crop generated latents with LTX Director Crop Reference Tail before decode."
@@ -1535,6 +1866,9 @@ class LTXDirector(io.ComfyNode):
                 guide_data["images"].append(dummy_image)
                 guide_data["insert_frames"].append(0)
                 guide_data["strengths"].append(0.0)
+                diagnostics.append(
+                    "No timeline guide images were available; inserted a zero-strength dummy guide image."
+                )
 
                 derived_w = w
                 derived_h = h
@@ -1542,6 +1876,7 @@ class LTXDirector(io.ComfyNode):
             raise
         except Exception as e:
             log.warning("[PromptRelay] Could not build guide_data: %s", e)
+            diagnostics.append(f"Could not build guide_data: {e}")
 
         # --- Auto-generate LTXV latent if none was provided ---
         total_latents = clean_latent_frames + hidden_reference_count
@@ -1564,6 +1899,35 @@ class LTXDirector(io.ComfyNode):
             )
         else:
             latent = _pad_latent_tail(optional_latent, hidden_reference_count)
+
+        debug_json = _build_director_debug_json(
+            raw_global_prompt=raw_global_prompt,
+            raw_local_prompts=raw_local_prompts,
+            final_global_prompt=global_prompt,
+            final_local_prompts=local_prompts,
+            segment_lengths=segment_lengths,
+            epsilon=epsilon,
+            timeline=tdata,
+            configured_references=configured_references,
+            reference_usage=reference_usage,
+            guide_data=guide_data,
+            duration_frames=duration_frames,
+            clean_pixel_frames=clean_pixel_frames,
+            clean_latent_frames=clean_latent_frames,
+            hidden_reference_count=hidden_reference_count,
+            total_latents=total_latents,
+            ltxv_length=ltxv_length,
+            optional_latent_used=optional_latent is not None,
+            frame_rate=frame_rate,
+            aspect_ratio=aspect_ratio,
+            orientation=orientation,
+            quality_tier=quality_tier,
+            resize_method=resize_method,
+            divisible_by=divisible_by,
+            use_input_image_size=use_input_image_size,
+            diagnostics=diagnostics,
+            unsupported_tags=unsupported_tags,
+        )
 
         patched, conditioning = _encode_relay(
             model,
@@ -1692,6 +2056,7 @@ class LTXDirector(io.ComfyNode):
             source_video_audio,
             float(source_video_frame_rate),
             int(source_video_frame_count),
+            debug_json,
         )
 
 
