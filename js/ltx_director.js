@@ -19,7 +19,7 @@ const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
 const IMAGE_BROWSER_COLUMNS_MIN = 2;
 const IMAGE_BROWSER_COLUMNS_MAX = 8;
 const REFERENCE_CARD_MIN_WIDTH = 150;
-const REFERENCE_CARD_ROW_HEIGHT = 78;
+const REFERENCE_CARD_ROW_HEIGHT = 86;
 const REFERENCE_LIST_MAX_HEIGHT = 160;
 const REFERENCE_EMPTY_LIST_HEIGHT = 26;
 const REFERENCE_PANEL_CHROME_HEIGHT = 54;
@@ -453,6 +453,7 @@ const STYLES = `
     padding: 6px;
     display: grid;
     grid-template-columns: 52px 1fr;
+    align-content: start;
     gap: 8px;
     min-width: 0;
     max-width: 100%;
@@ -500,17 +501,22 @@ const STYLES = `
   }
   .pr-reference-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 4px;
     min-width: 0;
   }
   .pr-reference-mini-btn {
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     background: #181818;
     color: #ddd;
     border: 1px solid #333;
     border-radius: 4px;
-    padding: 3px 5px;
-    font-size: 10px;
+    padding: 3px;
     cursor: pointer;
   }
   .pr-reference-mini-btn:hover {
@@ -539,6 +545,10 @@ const STYLES = `
     cursor: not-allowed;
   }
   .pr-reference-icon-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+  .pr-reference-mini-btn svg {
     width: 13px;
     height: 13px;
   }
@@ -1676,6 +1686,8 @@ if (!document.getElementById("prompt-relay-styles")) {
 const ICONS = {
   upload: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>`,
   audio: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`,
+  copy: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
+  insert: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><polyline points="7 10 12 15 17 10"></polyline><path d="M5 21h14"></path></svg>`,
   trash: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
   text: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`,
   play: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
@@ -2530,7 +2542,9 @@ class TimelineEditor {
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";
       copyBtn.className = "pr-reference-mini-btn";
-      copyBtn.textContent = "Copy";
+      copyBtn.innerHTML = ICONS.copy;
+      copyBtn.title = "Copy reference tag";
+      copyBtn.setAttribute("aria-label", "Copy reference tag");
       copyBtn.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(referenceTag(ref));
@@ -2542,14 +2556,18 @@ class TimelineEditor {
       const insertBtn = document.createElement("button");
       insertBtn.type = "button";
       insertBtn.className = "pr-reference-mini-btn";
-      insertBtn.textContent = "Insert";
+      insertBtn.innerHTML = ICONS.insert;
+      insertBtn.title = "Insert reference tag";
+      insertBtn.setAttribute("aria-label", "Insert reference tag");
       insertBtn.disabled = this.privacyLocked;
       insertBtn.addEventListener("click", () => this.insertReferenceTag(ref));
 
       const removeBtn = document.createElement("button");
       removeBtn.type = "button";
       removeBtn.className = "pr-reference-mini-btn";
-      removeBtn.textContent = "Remove";
+      removeBtn.innerHTML = ICONS.trash;
+      removeBtn.title = "Remove reference";
+      removeBtn.setAttribute("aria-label", "Remove reference");
       removeBtn.disabled = this.privacyLocked;
       removeBtn.addEventListener("click", () => {
         if (this.privacyLocked) return;
