@@ -32,8 +32,10 @@ from .ltx_director_references import (
     build_reference_guide_specs,
     build_segment_reference_usage,
     normalize_reference_images,
+    parse_reference_tags,
     reference_usage_errors,
-    strip_reference_tags_from_prompt_list,
+    replace_reference_tags,
+    replace_reference_tags_in_prompt_list,
 )
 
 log = logging.getLogger(__name__)
@@ -1295,7 +1297,6 @@ class LTXDirector(io.ComfyNode):
         local_prompts = resolved_inputs["local_prompts"]
         segment_lengths = resolved_inputs["segment_lengths"]
         guide_strength = resolved_inputs["guide_strength"]
-        local_prompts = strip_reference_tags_from_prompt_list(local_prompts)
 
         # --- Build guide_data from image segments FIRST (to derive output dimensions) ---
         guide_data = {
@@ -1317,10 +1318,25 @@ class LTXDirector(io.ComfyNode):
         hidden_reference_count = 0
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
+            configured_references = normalize_reference_images(
+                tdata.get("referenceImages", [])
+            )
             reference_usage = build_segment_reference_usage(tdata, duration_frames)
             reference_errors = reference_usage_errors(reference_usage)
-            unsupported_tags = reference_errors["unsupported"]
-            unknown_tags = reference_errors["unknown"]
+            enabled_reference_labels = {
+                ref["label"]
+                for ref in configured_references
+                if ref.get("enabled", True)
+            }
+            global_unsupported_tags = []
+            global_unknown_tags = []
+            for tag in parse_reference_tags(global_prompt):
+                if not tag["supported"]:
+                    global_unsupported_tags.append(tag["token"])
+                elif tag["label"] not in enabled_reference_labels:
+                    global_unknown_tags.append(tag["token"])
+            unsupported_tags = sorted(set(reference_errors["unsupported"] + global_unsupported_tags))
+            unknown_tags = sorted(set(reference_errors["unknown"] + global_unknown_tags))
             if unsupported_tags:
                 log.warning(
                     "[PromptRelay] Unsupported reference tags ignored: %s",
@@ -1332,6 +1348,14 @@ class LTXDirector(io.ComfyNode):
                     f"{', '.join(unknown_tags)}. "
                     "Add the reference image in the Director References panel or remove the tag from the prompt."
                 )
+            global_prompt = replace_reference_tags(
+                global_prompt,
+                configured_references,
+            )
+            local_prompts = replace_reference_tags_in_prompt_list(
+                local_prompts,
+                configured_references,
+            )
             source_video_seg = next(
                 (
                     s
@@ -1361,9 +1385,6 @@ class LTXDirector(io.ComfyNode):
                     float(x.strip()) for x in guide_strength.split(",") if x.strip()
                 ]
 
-            configured_references = normalize_reference_images(
-                tdata.get("referenceImages", [])
-            )
             timeline_identity_tensors = []
             timeline_identity_insert_frames = []
             timeline_identity_segment_ids = []

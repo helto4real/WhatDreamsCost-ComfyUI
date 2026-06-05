@@ -54,6 +54,7 @@ def normalize_reference_images(value: Any) -> list[dict[str, Any]]:
             "kind": SUPPORTED_REFERENCE_KIND,
             "enabled": _safe_bool(item.get("enabled"), True),
             "strength": _safe_float(item.get("strength"), 1.0),
+            "description": str(item.get("description") or "").strip(),
         }
 
         for key in (
@@ -103,6 +104,38 @@ def strip_reference_tags_from_prompt_list(local_prompts: Any) -> str:
     if local_prompts is None:
         return ""
     return " | ".join(strip_reference_tags(part) for part in str(local_prompts).split("|"))
+
+
+def replace_reference_tags(prompt: Any, references: Any) -> str:
+    text = str(prompt or "")
+    refs = normalize_reference_images(references)
+    description_by_label = {
+        ref["label"]: str(ref.get("description") or "").strip()
+        for ref in refs
+        if ref.get("enabled", True)
+    }
+
+    def replacement(match: re.Match) -> str:
+        label = match.group("label").lower()
+        kind = match.group("kind").lower()
+        if kind != SUPPORTED_REFERENCE_KIND:
+            return " "
+        return description_by_label.get(label) or " "
+
+    replaced = REFERENCE_TAG_RE.sub(replacement, text)
+    replaced = re.sub(r"[ \t]{2,}", " ", replaced)
+    replaced = re.sub(r"[ \t]+([,.;:!?])", r"\1", replaced)
+    replaced = re.sub(r"([([{])[ \t]+", r"\1", replaced)
+    return replaced.strip()
+
+
+def replace_reference_tags_in_prompt_list(local_prompts: Any, references: Any) -> str:
+    if local_prompts is None:
+        return ""
+    return " | ".join(
+        replace_reference_tags(part, references)
+        for part in str(local_prompts).split("|")
+    )
 
 
 def build_segment_reference_usage(timeline: Any, duration_frames: Any = None) -> list[dict[str, Any]]:

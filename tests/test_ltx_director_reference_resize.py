@@ -355,7 +355,14 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
         timeline = {
             "referenceImages": [
-                {"id": "ref-one", "label": "image1", "kind": "character", "imageFile": "ref.png", "strength": 0.7},
+                {
+                    "id": "ref-one",
+                    "label": "image1",
+                    "kind": "character",
+                    "imageFile": "ref.png",
+                    "strength": 0.7,
+                    "description": "a young woman in a white dress",
+                },
             ],
             "segments": [
                 {
@@ -368,9 +375,21 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
             ],
         }
 
+        encode_calls = []
+
+        def fake_encode(model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon):
+            encode_calls.append(
+                {
+                    "global_prompt": global_prompt,
+                    "local_prompts": local_prompts,
+                    "segment_lengths": segment_lengths,
+                }
+            )
+            return "patched", "conditioning"
+
         with (
             mock.patch.object(ltx_director, "_load_image_tensor", return_value=reference),
-            mock.patch.object(ltx_director, "_encode_relay", return_value=("patched", "conditioning")),
+            mock.patch.object(ltx_director, "_encode_relay", side_effect=fake_encode),
             mock.patch.object(ltx_director, "_build_combined_audio", return_value=None),
             mock.patch.object(ltx_director, "_load_source_video_outputs", return_value=(None, None, 0.0, 0)),
         ):
@@ -407,6 +426,11 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         self.assertTrue(torch.allclose(guide_data["images"][0][:, :, :192, :], torch.zeros_like(guide_data["images"][0][:, :, :192, :])))
         self.assertGreater(float(guide_data["images"][0][:, :, 224:352, :].mean()), 0.9)
         self.assertNotEqual(tuple(guide_data["images"][0].shape), tuple(guide_data["reference_images"][0]["image"].shape))
+        self.assertEqual(len(encode_calls), 1)
+        self.assertEqual(
+            encode_calls[0]["local_prompts"],
+            "a young woman in a white dress A young woman in a white dress enters from the left.",
+        )
 
     def test_timeline_images_still_populate_normal_guides_with_references_present(self):
         timeline_image = torch.full((1, 160, 320, 3), 0.25, dtype=torch.float32)
@@ -469,6 +493,29 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         self.assertTrue(guide_data["reference_images"][0]["hidden_tail"])
         self.assertGreater(float(guide_data["images"][0].mean()), 0.2)
         self.assertEqual(tuple(guide_data["images"][1].shape), (1, 320, 576, 3))
+
+    def test_unknown_global_reference_tag_raises_clear_error(self):
+        timeline = {
+            "referenceImages": [],
+            "segments": [
+                {"id": "scene", "type": "text", "start": 0, "length": 8, "prompt": "Scene"},
+            ],
+        }
+
+        with self.assertRaises(ltx_director.LTXDirectorReferenceError):
+            ltx_director.LTXDirector.execute(
+                model="model",
+                clip="clip",
+                global_prompt="@image1:character",
+                duration_frames=8,
+                duration_seconds=1.0,
+                timeline_data=json.dumps(timeline),
+                local_prompts="Scene",
+                segment_lengths="8",
+                aspect_ratio="16:9",
+                orientation="landscape",
+                quality_tier="1 - fast samples",
+            )
 
     def test_repeated_character_reference_uses_one_hidden_tail_slot(self):
         reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)

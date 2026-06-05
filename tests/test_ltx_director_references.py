@@ -6,6 +6,8 @@ from ltx_director_references import (
     normalize_reference_images,
     parse_reference_tags,
     reference_usage_errors,
+    replace_reference_tags,
+    replace_reference_tags_in_prompt_list,
     strip_reference_tags,
     strip_reference_tags_from_prompt_list,
 )
@@ -39,7 +41,7 @@ class LTXDirectorReferenceTests(unittest.TestCase):
         refs = normalize_reference_images(
             [
                 {"id": "a", "imageFile": "a.png"},
-                {"id": "b", "label": "IMAGE7", "kind": "character", "strength": "0.5"},
+                {"id": "b", "label": "IMAGE7", "kind": "character", "strength": "0.5", "description": "Tall man"},
                 {"id": "style", "label": "image9", "kind": "style"},
             ]
         )
@@ -49,6 +51,39 @@ class LTXDirectorReferenceTests(unittest.TestCase):
         self.assertEqual(refs[0]["kind"], "character")
         self.assertEqual(refs[1]["label"], "image7")
         self.assertEqual(refs[1]["strength"], 0.5)
+        self.assertEqual(refs[1]["description"], "Tall man")
+
+    def test_replace_reference_tags_uses_descriptions(self):
+        refs = [
+            {"label": "image1", "kind": "character", "description": "a blonde woman in an olive jacket"},
+        ]
+
+        self.assertEqual(
+            replace_reference_tags("The subject turns. @image1:character", refs),
+            "The subject turns. a blonde woman in an olive jacket",
+        )
+
+    def test_replace_reference_tags_strips_empty_descriptions(self):
+        refs = [{"label": "image1", "kind": "character", "description": ""}]
+
+        self.assertEqual(
+            replace_reference_tags("The subject turns. @image1:character", refs),
+            "The subject turns.",
+        )
+
+    def test_replace_reference_tags_handles_multiple_and_repeated_references(self):
+        refs = [
+            {"label": "image1", "kind": "character", "description": "a blonde woman"},
+            {"label": "image2", "kind": "character", "description": "a dark-haired man"},
+        ]
+
+        self.assertEqual(
+            replace_reference_tags_in_prompt_list(
+                "@image1:character greets @image2:character | @image1:character smiles",
+                refs,
+            ),
+            "a blonde woman greets a dark-haired man | a blonde woman smiles",
+        )
 
     def test_build_segment_reference_usage_matches_enabled_known_references(self):
         timeline = {

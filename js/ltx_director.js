@@ -19,7 +19,7 @@ const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
 const IMAGE_BROWSER_COLUMNS_MIN = 2;
 const IMAGE_BROWSER_COLUMNS_MAX = 8;
 const REFERENCE_CARD_MIN_WIDTH = 150;
-const REFERENCE_CARD_ROW_HEIGHT = 116;
+const REFERENCE_CARD_ROW_HEIGHT = 78;
 const REFERENCE_LIST_MAX_HEIGHT = 160;
 const REFERENCE_EMPTY_LIST_HEIGHT = 26;
 const REFERENCE_PANEL_CHROME_HEIGHT = 54;
@@ -515,6 +515,32 @@ const STYLES = `
   }
   .pr-reference-mini-btn:hover {
     background: #2c2c2c;
+  }
+  .pr-reference-icon-btn {
+    width: 24px;
+    height: 24px;
+    padding: 3px;
+    flex: 0 0 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #181818;
+    color: #ddd;
+    border: 1px solid #333;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .pr-reference-icon-btn:hover {
+    background: #2c2c2c;
+  }
+  .pr-reference-icon-btn:disabled,
+  .pr-reference-mini-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .pr-reference-icon-btn svg {
+    width: 13px;
+    height: 13px;
   }
   .pr-reference-empty {
     color: #999;
@@ -1204,6 +1230,90 @@ const STYLES = `
     justify-content: flex-end;
     margin-top: 12px;
   }
+  .pr-reference-description-panel {
+    width: 560px;
+    max-width: 92vw;
+  }
+  .pr-reference-description-body {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    gap: 12px;
+    align-items: start;
+  }
+  .pr-reference-description-preview {
+    min-width: 0;
+  }
+  .pr-reference-description-preview img {
+    display: block;
+    width: 88px;
+    height: 88px;
+    object-fit: cover;
+    background: #111;
+    border: 1px solid #444;
+    border-radius: 4px;
+    transition: opacity .12s ease;
+  }
+  .pr-reference-description-dialog.hide-private .pr-reference-description-preview img {
+    opacity: 0;
+  }
+  .pr-reference-description-dialog.hide-private .pr-reference-description-panel:hover .pr-reference-description-preview img {
+    opacity: 1;
+  }
+  .pr-reference-description-meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .pr-reference-description-label {
+    font-size: 12px;
+    color: #aaa;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pr-reference-description-label strong {
+    color: #e8e8e8;
+    font-weight: 600;
+  }
+  .pr-reference-description-editor {
+    width: 100%;
+    min-height: 168px;
+    resize: vertical;
+    background: #151515;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    box-sizing: border-box;
+    outline: none;
+  }
+  .pr-reference-description-editor:focus {
+    border-color: #8ab4f8;
+  }
+  .pr-reference-description-dialog.hide-private .pr-reference-description-editor {
+    color: transparent !important;
+    caret-color: transparent !important;
+    text-shadow: none !important;
+    -webkit-text-fill-color: transparent !important;
+    user-select: none;
+  }
+  .pr-reference-description-dialog.hide-private .pr-reference-description-editor::placeholder {
+    color: transparent !important;
+  }
+  .pr-reference-description-dialog.hide-private .pr-reference-description-editor::selection {
+    color: transparent !important;
+    background: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+  }
+  @media (max-width: 620px) {
+    .pr-reference-description-body {
+      grid-template-columns: 1fr;
+    }
+  }
   .pr-image-folder-row {
     display: grid;
     grid-template-columns: 90px 1fr;
@@ -1620,6 +1730,7 @@ function parseInitial(jsonStr) {
       kind: "character",
       enabled: ref.enabled !== false,
       strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      description: String(ref.description || ""),
       ...ref,
     }))
     .map((ref, index) => ({
@@ -1628,6 +1739,7 @@ function parseInitial(jsonStr) {
       kind: "character",
       enabled: ref.enabled !== false,
       strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      description: String(ref.description || ""),
     }));
 
   return parsed;
@@ -2301,6 +2413,15 @@ class TimelineEditor {
       }));
   }
 
+  referenceThumbTitle(ref) {
+    const tag = referenceTag(ref);
+    const description = String(ref?.description || "").trim();
+    if (description && !this.privacyLocked && !this.shouldHideTimelineImagesPrompts()) {
+      return description;
+    }
+    return `Character reference ${tag}`;
+  }
+
   getReferencePanelExtraHeight(width = timelineNodeInnerWidth(this.node)) {
     if (!this.referencesOpen) return 0;
 
@@ -2354,7 +2475,10 @@ class TimelineEditor {
       img.className = "pr-reference-thumb";
       img.alt = "";
       img.src = this.getTimelineImageThumbUrl(ref.imageFolderAlias, ref);
-      img.title = ref.imageFile || ref.fileName || ref.label || "Reference image";
+      img.title = this.referenceThumbTitle(ref);
+      img.addEventListener("mouseenter", () => {
+        img.title = this.referenceThumbTitle(ref);
+      });
       img.addEventListener("click", () => {
         if (ref.imageB64) this.showImagePreview(ref.imageB64, `${referenceTag(ref)} ${ref.imageFile || ""}`.trim());
       });
@@ -2380,6 +2504,20 @@ class TimelineEditor {
         this.renderReferencesPanel();
       });
       labelRow.appendChild(labelInput);
+
+      const editDescriptionBtn = document.createElement("button");
+      editDescriptionBtn.type = "button";
+      editDescriptionBtn.className = "pr-reference-icon-btn";
+      editDescriptionBtn.innerHTML = ICONS.text;
+      editDescriptionBtn.title = "Edit character description";
+      editDescriptionBtn.setAttribute("aria-label", "Edit character description");
+      editDescriptionBtn.disabled = this.privacyLocked;
+      editDescriptionBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (this.privacyLocked) return;
+        this.showReferenceDescriptionDialog(ref);
+      });
+      labelRow.appendChild(editDescriptionBtn);
 
       const tag = document.createElement("div");
       tag.className = "pr-reference-tag";
@@ -2433,6 +2571,105 @@ class TimelineEditor {
     this.resizeNodeToTimelineContent({ defer: true });
   }
 
+  closeReferenceDescriptionDialog() {
+    document.querySelector(".pr-reference-description-dialog")?.remove();
+  }
+
+  showReferenceDescriptionDialog(ref) {
+    if (this.privacyLocked || !ref) return;
+    this.closeReferenceDescriptionDialog();
+
+    const tag = referenceTag(ref);
+    const title = `Character Description ${tag}`;
+    const thumbUrl = this.getTimelineImageThumbUrl(ref.imageFolderAlias, ref);
+    const overlay = document.createElement("div");
+    overlay.className = "pr-image-browser-dialog pr-reference-description-dialog";
+    overlay.innerHTML = `
+      <div class="pr-image-browser-panel pr-reference-description-panel">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="pr-reference-description-body">
+          <div class="pr-reference-description-preview">
+            <img src="${escapeHtml(thumbUrl)}" alt="">
+          </div>
+          <div class="pr-reference-description-meta">
+            <div class="pr-reference-description-label">
+              <strong>${escapeHtml(normalizeReferenceLabel(ref.label))}</strong> ${escapeHtml(tag)}
+            </div>
+            <textarea class="pr-reference-description-editor" spellcheck="true" placeholder="Character description used when ${escapeHtml(tag)} appears in prompts"></textarea>
+          </div>
+        </div>
+        <div class="pr-image-browser-actions">
+          <button class="cancel" type="button">Cancel</button>
+          <button class="save" type="button">Save</button>
+        </div>
+      </div>`;
+
+    const panel = overlay.querySelector(".pr-reference-description-panel");
+    const textarea = overlay.querySelector(".pr-reference-description-editor");
+    const cancelBtn = overlay.querySelector(".cancel");
+    const saveBtn = overlay.querySelector(".save");
+    textarea.value = String(ref.description || "");
+    let didFocusEditor = false;
+
+    const close = () => this.closeReferenceDescriptionDialog();
+    const save = () => {
+      if (this.privacyLocked) return;
+      ref.description = textarea.value;
+      this.commitChanges(true);
+      this.renderReferencesPanel();
+      close();
+    };
+    const focusEditorOnce = () => {
+      if (didFocusEditor) return;
+      didFocusEditor = true;
+      textarea.focus();
+      textarea.select();
+    };
+    const syncDescriptionPrivacy = ({ forceHidden = false } = {}) => {
+      const shouldHide = this.hideTimelineImagesPromptsEnabled()
+        && (forceHidden || !panel.matches(":hover"));
+      overlay.classList.toggle("hide-private", shouldHide);
+      this.setElementTextPrivacy(textarea, shouldHide);
+      if (shouldHide) {
+        try { textarea.setSelectionRange(0, 0); } catch { }
+        window.getSelection?.()?.removeAllRanges?.();
+        if (document.activeElement === textarea) textarea.blur();
+      }
+      if (!shouldHide) focusEditorOnce();
+    };
+
+    cancelBtn.addEventListener("click", close);
+    saveBtn.addEventListener("click", save);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) close();
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    });
+    panel.addEventListener("mouseenter", () => syncDescriptionPrivacy());
+    panel.addEventListener("mouseleave", () => syncDescriptionPrivacy());
+    for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
+      panel.addEventListener(eventName, (event) => event.stopPropagation());
+    }
+    for (const input of [textarea, cancelBtn, saveBtn]) {
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close();
+        }
+      });
+      for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
+        input.addEventListener(eventName, (event) => event.stopPropagation());
+      }
+    }
+
+    document.body.appendChild(overlay);
+    syncDescriptionPrivacy({ forceHidden: true });
+  }
+
   async addReferenceImageFromBrowser(folderAlias, image) {
     const imageUrl = this.getTimelineImageUrl(folderAlias, image);
     await new Promise((resolve, reject) => {
@@ -2445,6 +2682,7 @@ class TimelineEditor {
           kind: "character",
           enabled: true,
           strength: 1.0,
+          description: "",
           imageFolderAlias: folderAlias,
           imageFile: image.filename,
           imageB64: imageUrl,
