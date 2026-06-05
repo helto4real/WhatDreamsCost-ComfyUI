@@ -467,6 +467,15 @@ const STYLES = `
     background: #111;
     object-fit: cover;
     border: 1px solid #333;
+    transition: opacity .12s ease;
+  }
+  .pr-reference-list.hide-images .pr-reference-thumb {
+    opacity: 0;
+  }
+  .pr-reference-list.hide-images:hover .pr-reference-thumb,
+  .pr-reference-list.hide-images .pr-reference-card:hover .pr-reference-thumb,
+  .pr-reference-list.show-images .pr-reference-thumb {
+    opacity: 1;
   }
   .pr-reference-meta {
     min-width: 0;
@@ -2412,6 +2421,7 @@ class TimelineEditor {
     if (this.hideTimelineImagesPromptsEnabled()) {
       this.updatePromptPrivacyVisibility();
       this.render();
+      this.renderReferencesPanel();
     }
   }
 
@@ -2568,7 +2578,10 @@ class TimelineEditor {
   renderReferencesPanel() {
     if (!this.referencesPanel || !this.referencesList) return;
     const refs = this.timeline.referenceImages || [];
+    const hideReferenceImages = this.hideTimelineImagesPromptsEnabled();
     this.referencesPanel.classList.toggle("is-open", !!this.referencesOpen);
+    this.referencesList.classList.toggle("hide-images", hideReferenceImages);
+    this.referencesList.classList.toggle("show-images", !hideReferenceImages);
     if (this.addReferenceBtn) this.addReferenceBtn.disabled = this.privacyLocked;
     this.referencesList.innerHTML = "";
 
