@@ -4,7 +4,7 @@ from .ltx_sequencer import LTXSequencer
 from .speech_length_calculator import SpeechLengthCalculator
 from .load_audio_ui import LoadAudioUI
 from .load_video_ui import LoadVideoUI
-from .ltx_director import LTXDirector
+from .ltx_director import LTXDirector, LTXDirectorCropReferenceTail
 from .ltx_director_guide import LTXDirectorGetICLoRAParameters, LTXDirectorGuide
 from .ltx_director_tiled_upscale import LTXDirectorTiledUpscaleGuide, LTXDirectorTiledUpscaleSettings
 from .ltx_action_amplifier import LTXActionAmplifier
@@ -27,6 +27,7 @@ class PromptRelay(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         return [
             LTXDirector,
+            LTXDirectorCropReferenceTail,
             LTXDirectorGetICLoRAParameters,
             LTXDirectorGuide,
             LTXDirectorTiledUpscaleSettings,
@@ -50,6 +51,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadAudioUI": LoadAudioUI,
     "LoadVideoUI": LoadVideoUI,
     "LTXDirector": LTXDirector,
+    "LTXDirectorCropReferenceTail": LTXDirectorCropReferenceTail,
     "LTXDirectorGetICLoRAParameters": LTXDirectorGetICLoRAParameters,
     "LTXDirectorGuide": LTXDirectorGuide,
     "LTXDirectorTiledUpscaleSettings": LTXDirectorTiledUpscaleSettings,
@@ -70,6 +72,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadAudioUI": "Load Audio UI",
     "LoadVideoUI": "Load Video UI",
     "LTXDirector": "LTX Director",
+    "LTXDirectorCropReferenceTail": "LTX Director Crop Reference Tail",
     "LTXDirectorGetICLoRAParameters": "LTX Director Get IC-LoRA Parameters",
     "LTXDirectorGuide": "LTX Director Guide",
     "LTXDirectorTiledUpscaleSettings": "LTX Director Tiled Upscale Settings",

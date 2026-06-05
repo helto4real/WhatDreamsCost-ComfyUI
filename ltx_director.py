@@ -41,6 +41,10 @@ log = logging.getLogger(__name__)
 # Custom socket type shared with LTXSequencer
 GuideData = io.Custom("GUIDE_DATA")
 
+
+class LTXDirectorReferenceError(ValueError):
+    pass
+
 LTX_RESOLUTION_PRESETS = {
     "1:1": [
         (512, 512),
@@ -474,6 +478,94 @@ def _stack_timeline_identity_images(
     )
 
 
+def _dedupe_reference_specs(reference_specs: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    index_by_key: dict[str, int] = {}
+    for spec in reference_specs:
+        key = str(spec.get("label") or spec.get("id") or "").strip().lower()
+        if not key:
+            key = str(len(deduped))
+
+        segment_id = spec.get("segment_id")
+        if key in index_by_key:
+            existing = deduped[index_by_key[key]]
+            ids = [
+                part
+                for part in str(existing.get("segment_id") or "").split(",")
+                if part
+            ]
+            if segment_id is not None and str(segment_id) not in ids:
+                ids.append(str(segment_id))
+            if ids:
+                existing["segment_id"] = ",".join(ids)
+            continue
+
+        entry = dict(spec)
+        if segment_id is not None:
+            entry["segment_id"] = str(segment_id)
+        deduped.append(entry)
+        index_by_key[key] = len(deduped) - 1
+    return deduped
+
+
+def _crop_latent_to_frame_count(latent, frame_count):
+    try:
+        frame_count = int(frame_count)
+    except (TypeError, ValueError):
+        return latent
+    if frame_count <= 0 or not isinstance(latent, dict):
+        return latent
+
+    cropped = latent.copy()
+
+    def crop_tensor(tensor):
+        if not torch.is_tensor(tensor):
+            return tensor
+        if tensor.ndim == 5:
+            return tensor[:, :, : min(frame_count, tensor.shape[2]), :, :]
+        if tensor.ndim in (3, 4):
+            return tensor[: min(frame_count, tensor.shape[0])]
+        return tensor
+
+    if "samples" in cropped:
+        cropped["samples"] = crop_tensor(cropped["samples"])
+    if "noise_mask" in cropped:
+        cropped["noise_mask"] = crop_tensor(cropped["noise_mask"])
+    return cropped
+
+
+def _pad_latent_tail(latent, extra_latent_frames: int):
+    if extra_latent_frames <= 0:
+        return latent
+    if not isinstance(latent, dict) or not torch.is_tensor(latent.get("samples")):
+        raise ValueError("LTX Director hidden references need optional_latent to be a LATENT dict with tensor samples.")
+
+    samples = latent["samples"]
+    if samples.ndim != 5:
+        raise ValueError(
+            "LTX Director hidden references can only auto-pad 5D video latent samples "
+            f"(got shape {tuple(samples.shape)})."
+        )
+
+    padded = latent.copy()
+    pad_shape = list(samples.shape)
+    pad_shape[2] = int(extra_latent_frames)
+    padded["samples"] = torch.cat(
+        [samples, torch.zeros(pad_shape, dtype=samples.dtype, device=samples.device)],
+        dim=2,
+    )
+
+    noise_mask = latent.get("noise_mask")
+    if torch.is_tensor(noise_mask) and noise_mask.ndim == 5:
+        mask_shape = list(noise_mask.shape)
+        mask_shape[2] = int(extra_latent_frames)
+        padded["noise_mask"] = torch.cat(
+            [noise_mask, torch.ones(mask_shape, dtype=noise_mask.dtype, device=noise_mask.device)],
+            dim=2,
+        )
+    return padded
+
+
 def _compress_image(tensor: torch.Tensor, crf: int) -> torch.Tensor:
     """Apply H.264 compression artefacts to a [1, H, W, 3] float32 tensor (ComfyUI image format).
     crf=0 means no compression. Uses PyAV to encode/decode a single frame in-memory."""
@@ -899,6 +991,8 @@ class LTXDirector(io.ComfyNode):
                 privacy_mode=False, privacy_payload="", normalize_audio=False) -> io.NodeOutput:
 
         frame_rate = _safe_float(frame_rate, 24.0)
+        clean_pixel_frames = int(duration_frames) + 1
+        clean_latent_frames = ((clean_pixel_frames - 1) // 8) + 1
 
         resolved_inputs = resolve_ltx_director_inputs(
             global_prompt=global_prompt,
@@ -924,10 +1018,15 @@ class LTXDirector(io.ComfyNode):
             "strengths": [],
             "frame_rate": frame_rate,
             "reference_images": [],
+            "reference_mode": "hidden_tail",
+            "clean_pixel_frames": clean_pixel_frames,
+            "clean_latent_frames": clean_latent_frames,
+            "hidden_reference_count": 0,
         }
         target_w, target_h = _ltx_preset_dimensions(aspect_ratio, orientation, quality_tier)
         derived_w, derived_h = (0, 0) if use_input_image_size else (target_w, target_h)
         source_video_seg = None
+        hidden_reference_count = 0
         try:
             tdata = json.loads(timeline_data) if timeline_data else {}
             reference_usage = build_segment_reference_usage(tdata, duration_frames)
@@ -937,7 +1036,7 @@ class LTXDirector(io.ComfyNode):
             if unsupported_tags:
                 log.warning("[PromptRelay] Unsupported reference tags ignored: %s", ", ".join(unsupported_tags))
             if unknown_tags:
-                raise ValueError(
+                raise LTXDirectorReferenceError(
                     "LTX Director reference tag(s) were used without matching enabled character reference images: "
                     f"{', '.join(unknown_tags)}. "
                     "Add the reference image in the Director References panel or remove the tag from the prompt."
@@ -1034,12 +1133,13 @@ class LTXDirector(io.ComfyNode):
                         }
                     )
 
-            reference_specs = build_reference_guide_specs(tdata, duration_frames)
+            reference_specs = _dedupe_reference_specs(build_reference_guide_specs(tdata, duration_frames))
+            hidden_reference_count = len(reference_specs)
+            guide_data["hidden_reference_count"] = hidden_reference_count
             if reference_specs:
                 log.warning(
-                    "[PromptRelay] Director character references are inserted as LTX guide frames for likeness. "
-                    "This can make reference-frame artifacts visible at tagged segment starts; tune reference "
-                    "strength if needed."
+                    "[PromptRelay] Director character references are inserted as hidden tail guide frames "
+                    "for likeness. Crop generated latents with LTX Director Crop Reference Tail before decode."
                 )
             for spec in reference_specs:
                 raw_tensor = _load_image_tensor(_reference_image_segment(spec))
@@ -1066,7 +1166,8 @@ class LTXDirector(io.ComfyNode):
                     guide_tensor = _compress_image_frames(guide_tensor, img_compression)
 
                 strength = float(spec.get("strength", 1.0))
-                insert_frame = int(spec.get("insert_frame", 0))
+                hidden_index = len([ref for ref in guide_data["reference_images"] if ref.get("hidden_tail")])
+                insert_frame = (clean_latent_frames + hidden_index) * 8
                 metadata = {
                     "id": spec.get("id"),
                     "label": spec.get("label"),
@@ -1075,6 +1176,9 @@ class LTXDirector(io.ComfyNode):
                     "insert_frame": insert_frame,
                     "strength": strength,
                     "image": identity_tensor,
+                    "hidden_tail": True,
+                    "clean_latent_frames": clean_latent_frames,
+                    "clean_pixel_frames": clean_pixel_frames,
                 }
                 guide_data["reference_images"].append(metadata)
                 guide_data["images"].append(guide_tensor)
@@ -1100,27 +1204,28 @@ class LTXDirector(io.ComfyNode):
                 
                 derived_w = w
                 derived_h = h
+        except LTXDirectorReferenceError:
+            raise
         except Exception as e:
             log.warning("[PromptRelay] Could not build guide_data: %s", e)
 
         # --- Auto-generate LTXV latent if none was provided ---
-        ltxv_length = duration_frames + 1
+        total_latents = clean_latent_frames + hidden_reference_count
+        ltxv_length = ((total_latents - 1) * 8) + 1
         if optional_latent is None:
             latent_w = max(32, (derived_w // 32) * 32)
             latent_h = max(32, (derived_h // 32) * 32)
-            # LTXV temporal: ((length - 1) // 8) + 1 latent frames; invert to get pixel frames -> length
-            latent_t = ((ltxv_length - 1) // 8) + 1
             samples = torch.zeros(
-                [1, 128, latent_t, latent_h // 32, latent_w // 32],
+                [1, 128, total_latents, latent_h // 32, latent_w // 32],
                 device=comfy.model_management.intermediate_device(),
             )
             latent = {"samples": samples}
             log.info(
-                "[PromptRelay] Auto-generated LTXV latent: %dx%d, %d pixel frames (%d latent frames)",
-                latent_w, latent_h, ltxv_length, latent_t,
+                "[PromptRelay] Auto-generated LTXV latent: %dx%d, %d pixel frames (%d latent frames, %d hidden refs)",
+                latent_w, latent_h, ltxv_length, total_latents, hidden_reference_count,
             )
         else:
-            latent = optional_latent
+            latent = _pad_latent_tail(optional_latent, hidden_reference_count)
 
         patched, conditioning = _encode_relay(
             model, clip, latent, global_prompt, local_prompts, segment_lengths, epsilon,
@@ -1225,10 +1330,50 @@ class LTXDirector(io.ComfyNode):
         )
 
 
+class LTXDirectorCropReferenceTail(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="LTXDirectorCropReferenceTail",
+            display_name="LTX Director Crop Reference Tail",
+            category="WhatDreamsCost",
+            description=(
+                "Crops hidden character reference tail frames from a sampled LTX Director latent. "
+                "Connect the latent after sampling and guide_data from LTX Director."
+            ),
+            inputs=[
+                io.Latent.Input("latent", tooltip="Sampled latent to crop back to the visible Director duration."),
+                GuideData.Input("guide_data", tooltip="Guide data produced by LTX Director."),
+            ],
+            outputs=[
+                io.Latent.Output(display_name="latent", tooltip="Latent cropped to the visible Director duration."),
+                io.Int.Output(display_name="clean_pixel_frames", tooltip="Visible pixel-frame count for downstream video output."),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, latent, guide_data) -> io.NodeOutput:
+        clean_latent_frames = None
+        clean_pixel_frames = 0
+        if isinstance(guide_data, dict):
+            clean_latent_frames = guide_data.get("clean_latent_frames")
+            try:
+                clean_pixel_frames = int(guide_data.get("clean_pixel_frames") or 0)
+            except (TypeError, ValueError):
+                clean_pixel_frames = 0
+
+        if clean_latent_frames is None:
+            return io.NodeOutput(latent, clean_pixel_frames)
+
+        return io.NodeOutput(_crop_latent_to_frame_count(latent, clean_latent_frames), clean_pixel_frames)
+
+
 NODE_CLASS_MAPPINGS = {
     "LTXDirector": LTXDirector,
+    "LTXDirectorCropReferenceTail": LTXDirectorCropReferenceTail,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptRelayEncodeTimeline": "Prompt Relay Encode (Timeline)",
+    "LTXDirectorCropReferenceTail": "LTX Director Crop Reference Tail",
 }
