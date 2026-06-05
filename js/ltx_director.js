@@ -18,6 +18,11 @@ const IMAGE_BROWSER_COLUMNS_STORAGE_KEY = "wdc_ltx_director_image_columns";
 const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
 const IMAGE_BROWSER_COLUMNS_MIN = 2;
 const IMAGE_BROWSER_COLUMNS_MAX = 8;
+const REFERENCE_CARD_MIN_WIDTH = 150;
+const REFERENCE_CARD_ROW_HEIGHT = 116;
+const REFERENCE_LIST_MAX_HEIGHT = 160;
+const REFERENCE_EMPTY_LIST_HEIGHT = 26;
+const REFERENCE_PANEL_CHROME_HEIGHT = 54;
 
 const HIDDEN_WIDGET_NAMES = ["timeline_data", "local_prompts", "segment_lengths", "guide_strength", "audio_data", "use_custom_audio", "normalize_audio", "use_global_prompt", "hide_timeline_images_prompts", "privacy_mode", "privacy_payload"];
 
@@ -386,7 +391,9 @@ const STYLES = `
   }
   .pr-prompt-area {
     width: 100%;
-    height: 100%;
+    height: 96px;
+    min-height: 72px;
+    flex: 0 0 96px;
     background: #222;
     color: #e0e0e0;
     border: 1px solid #111;
@@ -404,12 +411,15 @@ const STYLES = `
   }
   .pr-reference-panel {
     display: none;
+    width: 100%;
+    max-width: 100%;
     background: #1b1b1b;
     border: 1px solid #333;
     border-radius: 6px;
     padding: 8px;
     box-sizing: border-box;
     color: #ddd;
+    overflow: hidden;
   }
   .pr-reference-panel.is-open {
     display: block;
@@ -429,6 +439,12 @@ const STYLES = `
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    max-height: 160px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 2px;
   }
   .pr-reference-card {
     background: #222;
@@ -439,6 +455,9 @@ const STYLES = `
     grid-template-columns: 52px 1fr;
     gap: 8px;
     min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
   }
   .pr-reference-thumb {
     width: 52px;
@@ -462,6 +481,7 @@ const STYLES = `
   }
   .pr-reference-label-input {
     min-width: 0;
+    max-width: 100%;
     flex: 1;
     background: #181818;
     color: #eee;
@@ -469,6 +489,7 @@ const STYLES = `
     border-radius: 4px;
     padding: 3px 5px;
     font-size: 11px;
+    box-sizing: border-box;
   }
   .pr-reference-tag {
     font-size: 11px;
@@ -481,6 +502,7 @@ const STYLES = `
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
+    min-width: 0;
   }
   .pr-reference-mini-btn {
     background: #181818;
@@ -1963,6 +1985,7 @@ class TimelineEditor {
       this.canvas.style.height = `${this.canvasHeight}px`;
       const width = this.canvas.offsetWidth || this._lastWidth || timelineNodeInnerWidth(this.node);
       this.resizeCanvas(width);
+      this.resizeNodeToTimelineContent();
     }
 
     return true;
@@ -2278,6 +2301,35 @@ class TimelineEditor {
       }));
   }
 
+  getReferencePanelExtraHeight(width = timelineNodeInnerWidth(this.node)) {
+    if (!this.referencesOpen) return 0;
+
+    const refs = this.timeline.referenceImages || [];
+    const contentWidth = Math.max(REFERENCE_CARD_MIN_WIDTH, width - 18);
+    const columns = Math.max(1, Math.floor((contentWidth + 8) / (REFERENCE_CARD_MIN_WIDTH + 8)));
+    const rows = refs.length ? Math.ceil(refs.length / columns) : 1;
+    const listHeight = refs.length
+      ? Math.min(REFERENCE_LIST_MAX_HEIGHT, rows * REFERENCE_CARD_ROW_HEIGHT + Math.max(0, rows - 1) * 8)
+      : REFERENCE_EMPTY_LIST_HEIGHT;
+
+    return REFERENCE_PANEL_CHROME_HEIGHT + listHeight;
+  }
+
+  resizeNodeToTimelineContent({ defer = false } = {}) {
+    const resize = () => {
+      if (!this.node || !this.node.computeSize) return;
+      const width = this.node.size?.[0];
+      const size = this.node.computeSize();
+      if (!Array.isArray(size) || size.length < 2) return;
+      if (Number.isFinite(width)) this.node.size[0] = width;
+      this.node.size[1] = size[1];
+      if (window.app?.graph) window.app.graph.setDirtyCanvas(true, true);
+    };
+
+    if (defer) setTimeout(resize, 0);
+    else resize();
+  }
+
   renderReferencesPanel() {
     if (!this.referencesPanel || !this.referencesList) return;
     const refs = this.timeline.referenceImages || [];
@@ -2290,6 +2342,7 @@ class TimelineEditor {
       empty.className = "pr-reference-empty";
       empty.textContent = "No character references.";
       this.referencesList.appendChild(empty);
+      this.resizeNodeToTimelineContent({ defer: true });
       return;
     }
 
@@ -2377,6 +2430,7 @@ class TimelineEditor {
       card.appendChild(meta);
       this.referencesList.appendChild(card);
     });
+    this.resizeNodeToTimelineContent({ defer: true });
   }
 
   async addReferenceImageFromBrowser(folderAlias, image) {
@@ -2564,12 +2618,6 @@ class TimelineEditor {
     referencesBtn.addEventListener("click", () => {
       this.referencesOpen = !this.referencesOpen;
       this.renderReferencesPanel();
-      if (this.node && this.node.computeSize) {
-        setTimeout(() => {
-          this.node.size[1] = this.node.computeSize()[1];
-          if (app.graph) app.graph.setDirtyCanvas(true, true);
-        }, 0);
-      }
     });
 
     const addTextBtn = document.createElement("button");
@@ -5023,16 +5071,8 @@ class TimelineEditor {
       delete this.durationSecondsWidget.computeSize;
     }
 
-    // Force node resize and redraw deferred to next tick
-    setTimeout(() => {
-      if (this.node && this.node.computeSize) {
-        const sz = this.node.computeSize();
-        this.node.size[1] = sz[1];
-        if (window.app && window.app.graph) {
-          window.app.graph.setDirtyCanvas(true, true);
-        }
-      }
-    }, 0);
+    // Force node resize and redraw deferred to next tick.
+    this.resizeNodeToTimelineContent({ defer: true });
   }
 
   updateUIFromSelection() {
@@ -5982,14 +6022,7 @@ class TimelineEditor {
 
       this.resizeCanvas(this.canvas.offsetWidth);
       this.render();
-
-      if (this.node && this.node.computeSize) {
-        const sz = this.node.computeSize();
-        this.node.size[1] = sz[1];
-        if (window.app && window.app.graph) {
-          window.app.graph.setDirtyCanvas(true, true);
-        }
-      }
+      this.resizeNodeToTimelineContent();
       return;
     }
 
@@ -6374,13 +6407,7 @@ class TimelineEditor {
     this.updateZoomSliderMax();
 
     if (!skipNodeResize) {
-      setTimeout(() => {
-        if (this.node && this.node.computeSize) {
-          const sz = this.node.computeSize();
-          this.node.size[1] = sz[1];
-          if (app.graph) app.graph.setDirtyCanvas(true, true);
-        }
-      }, 0);
+      this.resizeNodeToTimelineContent({ defer: true });
     }
 
     if (!skipRender) this.render();
@@ -7425,17 +7452,20 @@ app.registerExtension({
         applyGlobalPromptWidgetVisibility(globalPromptWidget, widgetBoolValue(useGlobalPromptWidget?.value));
 
         const container = document.createElement("div");
+        const self = this;
         const widget = this.addDOMWidget("timeline_ui", "timeline_ui", container, {
           getValue: () => "",
           setValue: () => { },
         });
 
         widget.computeSize = function (width) {
-          const canvasH = self._timelineEditor ? self._timelineEditor.canvasHeight : CANVAS_HEIGHT;
-          return [timelineNodeInnerWidth(self), canvasH + 235];
+          const editor = self._timelineEditor;
+          const innerWidth = timelineNodeInnerWidth(self);
+          const canvasH = editor ? editor.canvasHeight : CANVAS_HEIGHT;
+          const referenceH = editor ? editor.getReferencePanelExtraHeight(innerWidth) : 0;
+          return [innerWidth, canvasH + 235 + referenceH];
         };
 
-        const self = this;
         setTimeout(() => {
           try {
             self._timelineEditor = new TimelineEditor(self, container, widget);
