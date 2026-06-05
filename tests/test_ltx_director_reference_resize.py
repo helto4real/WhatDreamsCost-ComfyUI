@@ -193,8 +193,32 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         )
 
         self.assertEqual(tuple(resized.shape), (1, 160, 320, 3))
-        self.assertTrue(torch.allclose(resized[:, :, :96, :], torch.zeros_like(resized[:, :, :96, :])))
-        self.assertGreater(float(resized[:, :, 128:192, :].mean()), 0.9)
+        self.assertTrue(torch.allclose(resized[:, :, :120, :], torch.zeros_like(resized[:, :, :120, :])))
+        self.assertGreater(float(resized[:, :, 120:200, :].mean()), 0.9)
+        self.assertTrue(torch.allclose(resized[:, :, 200:, :], torch.zeros_like(resized[:, :, 200:, :])))
+
+    def test_padded_reference_inner_image_keeps_aspect_without_divisible_snap(self):
+        tensor = torch.ones((1, 150, 100, 3), dtype=torch.float32)
+
+        resized = ltx_director._resize_reference_guide_frames(
+            tensor,
+            target_w=576,
+            target_h=320,
+            derived_w=0,
+            derived_h=0,
+            use_input_image_size=False,
+            divisible_by=32,
+        )
+
+        expected_inner_w = 213
+        expected_left = 181
+        expected_right = expected_left + expected_inner_w
+
+        self.assertEqual(tuple(resized.shape), (1, 320, 576, 3))
+        self.assertTrue(torch.allclose(resized[:, :, :expected_left, :], torch.zeros_like(resized[:, :, :expected_left, :])))
+        self.assertGreater(float(resized[:, :, expected_left:expected_right, :].mean()), 0.9)
+        self.assertTrue(torch.allclose(resized[:, :, expected_right:, :], torch.zeros_like(resized[:, :, expected_right:, :])))
+        self.assertLess(abs((expected_inner_w / 320) - (100 / 150)), 0.005)
 
     def test_timeline_resize_can_still_crop(self):
         tensor = torch.ones((1, 200, 100, 3), dtype=torch.float32)

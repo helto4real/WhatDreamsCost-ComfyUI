@@ -374,6 +374,12 @@ def _resize_image(tensor: torch.Tensor, target_w: int, target_h: int, method: st
     def snap(val, div):
         return max(div, (val // div) * div)
 
+    def fit_size(max_w, max_h):
+        ratio = min(max_w / src_w, max_h / src_h)
+        new_w = max(1, min(max_w, int(round(src_w * ratio))))
+        new_h = max(1, min(max_h, int(round(src_h * ratio))))
+        return new_w, new_h
+
     tw = snap(target_w, divisible_by)
     th = snap(target_h, divisible_by)
 
@@ -385,17 +391,11 @@ def _resize_image(tensor: torch.Tensor, target_w: int, target_h: int, method: st
         resized = pil.resize((tw, th), _PilImage.LANCZOS)
 
     elif method == "maintain aspect ratio":
-        ratio = min(tw / src_w, th / src_h)
-        new_w = int(src_w * ratio)
-        new_h = int(src_h * ratio)
-        new_w = snap(new_w, divisible_by)
-        new_h = snap(new_h, divisible_by)
+        new_w, new_h = fit_size(tw, th)
         resized = pil.resize((new_w, new_h), _PilImage.LANCZOS)
 
     elif method == "pad":
-        ratio = min(tw / src_w, th / src_h)
-        new_w = snap(int(src_w * ratio), divisible_by)
-        new_h = snap(int(src_h * ratio), divisible_by)
+        new_w, new_h = fit_size(tw, th)
         inner = pil.resize((new_w, new_h), _PilImage.LANCZOS)
         resized = _PilImage.new("RGB", (tw, th), (0, 0, 0))
         resized.paste(inner, ((tw - new_w) // 2, (th - new_h) // 2))
