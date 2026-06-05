@@ -153,6 +153,19 @@ function encryptPrivacyStateSync(state) {
   return data.envelope;
 }
 
+async function fetchComfyQueueRunning() {
+  const response = await api.fetchApi("/queue");
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = {};
+  }
+  const running = Array.isArray(data.queue_running) ? data.queue_running : [];
+  return running.length > 0;
+}
+
 function serializedWidgetIndex(node, name) {
   const widgets = node.widgets || [];
   let index = 0;
@@ -3611,6 +3624,10 @@ class TimelineEditor {
 
   closePromptOptimizer({ unloadModel = true } = {}) {
     const dialog = document.querySelector(".pr-prompt-optimizer-dialog");
+    if (dialog?._promptOptimizerCleanup) {
+      try { dialog._promptOptimizerCleanup(); } catch (err) { console.warn("Could not cleanup prompt optimizer listeners:", err); }
+      dialog._promptOptimizerCleanup = null;
+    }
     if (dialog && unloadModel) {
       this.unloadPromptOptimizerModel(dialog.dataset.loadedModelAlias || "");
     }
@@ -3812,6 +3829,17 @@ class TimelineEditor {
     const modeButtons = [...overlay.querySelectorAll(".mode")];
     let mode = "sfw";
     let loadedModelAlias = "";
+    const optimizerState = {
+      optimizerBusy: false,
+      workflowRunning: false,
+      statusMessage: "",
+    };
+    const workflowRunningStatus = "Workflow is running; prompt generation is paused.";
+    const generateButtonTitles = new Map([
+      [generateTimelineBtn, generateTimelineBtn.title],
+      [generateReferencesBtn, generateReferencesBtn.title],
+      [generateAllBtn, generateAllBtn.title],
+    ]);
 
     const hideImages = this.hideTimelineImagesPromptsEnabled();
     grid.classList.toggle("hide-images", hideImages);
@@ -3884,24 +3912,89 @@ class TimelineEditor {
       if (state.decreaseHeight) state.decreaseHeight.disabled = this.privacyLocked || target <= rowTextMinHeight;
       if (state.increaseHeight) state.increaseHeight.disabled = this.privacyLocked || target >= rowTextMaxHeight;
     };
-    const setBusy = (busy) => {
-      generateTimelineBtn.disabled = busy || this.privacyLocked || !timelineRows.length;
-      generateReferencesBtn.disabled = busy || this.privacyLocked || !referenceRows.length;
-      generateAllBtn.disabled = busy || this.privacyLocked || (!timelineRows.length && !referenceRows.length);
-      replaceBtn.disabled = busy || this.privacyLocked;
-      modelSelect.disabled = busy || this.privacyLocked;
-      hfTokenInput.disabled = busy || this.privacyLocked;
-      saveTokenBtn.disabled = busy || this.privacyLocked;
-      clearTokenBtn.disabled = busy || this.privacyLocked;
-      editTemplateBtn.disabled = busy || this.privacyLocked;
-      promptTemplateInput.disabled = busy || this.privacyLocked;
-      saveTemplateBtn.disabled = busy || this.privacyLocked;
-      resetTemplateBtn.disabled = busy || this.privacyLocked;
-      for (const button of modeButtons) button.disabled = busy || this.privacyLocked;
-      for (const state of rowState.values()) {
-        if (state.decreaseHeight) state.decreaseHeight.disabled = busy || this.privacyLocked || state.textHeight <= rowTextMinHeight;
-        if (state.increaseHeight) state.increaseHeight.disabled = busy || this.privacyLocked || state.textHeight >= rowTextMaxHeight;
+    const refreshControlState = () => {
+      const localBusy = optimizerState.optimizerBusy;
+      const workflowBlocked = optimizerState.workflowRunning;
+      const generateBlocked = localBusy || workflowBlocked || this.privacyLocked;
+      generateTimelineBtn.disabled = generateBlocked || !timelineRows.length;
+      generateReferencesBtn.disabled = generateBlocked || !referenceRows.length;
+      generateAllBtn.disabled = generateBlocked || (!timelineRows.length && !referenceRows.length);
+      for (const button of [generateTimelineBtn, generateReferencesBtn, generateAllBtn]) {
+        button.title = workflowBlocked
+          ? "Workflow is running; wait for execution to finish"
+          : generateButtonTitles.get(button);
       }
+      if (workflowBlocked && !localBusy && !optimizerState.statusMessage) {
+        statusEl.textContent = workflowRunningStatus;
+      } else if (!workflowBlocked && optimizerState.statusMessage === workflowRunningStatus) {
+        optimizerState.statusMessage = "";
+        statusEl.textContent = "";
+      }
+      replaceBtn.disabled = localBusy || this.privacyLocked;
+      modelSelect.disabled = localBusy || this.privacyLocked;
+      hfTokenInput.disabled = localBusy || this.privacyLocked;
+      saveTokenBtn.disabled = localBusy || this.privacyLocked;
+      clearTokenBtn.disabled = localBusy || this.privacyLocked;
+      editTemplateBtn.disabled = localBusy || this.privacyLocked;
+      promptTemplateInput.disabled = localBusy || this.privacyLocked;
+      saveTemplateBtn.disabled = localBusy || this.privacyLocked;
+      resetTemplateBtn.disabled = localBusy || this.privacyLocked;
+      for (const button of modeButtons) button.disabled = localBusy || this.privacyLocked;
+      for (const state of rowState.values()) {
+        if (state.decreaseHeight) state.decreaseHeight.disabled = localBusy || this.privacyLocked || state.textHeight <= rowTextMinHeight;
+        if (state.increaseHeight) state.increaseHeight.disabled = localBusy || this.privacyLocked || state.textHeight >= rowTextMaxHeight;
+      }
+    };
+    const setBusy = (busy) => {
+      optimizerState.optimizerBusy = !!busy;
+      refreshControlState();
+    };
+    const setStatusText = (message) => {
+      optimizerState.statusMessage = message || "";
+      statusEl.textContent = optimizerState.statusMessage;
+    };
+    const refreshWorkflowRunning = async () => {
+      try {
+        optimizerState.workflowRunning = await fetchComfyQueueRunning();
+        refreshControlState();
+      } catch (err) {
+        console.warn("Could not refresh ComfyUI queue state:", err);
+      }
+    };
+    const startWorkflowRunningSync = () => {
+      const handlers = [];
+      const addApiListener = (eventName, handler) => {
+        if (!api?.addEventListener) return;
+        api.addEventListener(eventName, handler);
+        handlers.push([eventName, handler]);
+      };
+      addApiListener("executing", (event) => {
+        const detail = event?.detail || {};
+        optimizerState.workflowRunning = detail.node != null;
+        refreshControlState();
+        if (detail.node == null) refreshWorkflowRunning();
+      });
+      for (const eventName of ["execution_success", "execution_error", "execution_interrupted"]) {
+        addApiListener(eventName, () => {
+          optimizerState.workflowRunning = false;
+          refreshControlState();
+          refreshWorkflowRunning();
+        });
+      }
+      addApiListener("status", (event) => {
+        const remaining = Number(event?.detail?.status?.exec_info?.queue_remaining);
+        if (Number.isFinite(remaining)) refreshWorkflowRunning();
+      });
+      const pollId = window.setInterval(refreshWorkflowRunning, 1500);
+      overlay._promptOptimizerCleanup = () => {
+        window.clearInterval(pollId);
+        if (api?.removeEventListener) {
+          for (const [eventName, handler] of handlers) {
+            api.removeEventListener(eventName, handler);
+          }
+        }
+      };
+      refreshWorkflowRunning();
     };
 
     const renderRows = () => {
@@ -4073,7 +4166,7 @@ class TimelineEditor {
 
         if (selected && !payload.imageFile && item.imageB64) {
           preparedCount += 1;
-          statusEl.textContent = `Preparing image ${preparedCount} of ${selectedRows.length} for upload...`;
+          setStatusText(`Preparing image ${preparedCount} of ${selectedRows.length} for upload...`);
           updateProgressBar({ percent: selectedRows.length ? (preparedCount - 1) / selectedRows.length * 100 : 0 }, true);
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const seg = this.timeline.segments.find((candidate) => candidate.id === item.id);
@@ -4098,7 +4191,7 @@ class TimelineEditor {
 
         if (selected && !payload.imageFile && item.imageB64) {
           preparedCount += 1;
-          statusEl.textContent = `Preparing image ${preparedCount} of ${selectedRows.length} for upload...`;
+          setStatusText(`Preparing image ${preparedCount} of ${selectedRows.length} for upload...`);
           updateProgressBar({ percent: selectedRows.length ? (preparedCount - 1) / selectedRows.length * 100 : 0 }, true);
           await new Promise((resolve) => requestAnimationFrame(resolve));
           const ref = (this.timeline.referenceImages || []).find((candidate) => candidate.id === item.id);
@@ -4123,17 +4216,22 @@ class TimelineEditor {
 
     const runGenerate = async (scope) => {
       if (this.privacyLocked) return;
+      await refreshWorkflowRunning();
+      if (optimizerState.workflowRunning) {
+        setStatusText(workflowRunningStatus);
+        return;
+      }
       setBusy(true);
-      statusEl.textContent = "Preparing selected items...";
+      setStatusText("Preparing selected items...");
       updateProgressBar({ percent: 0 }, true);
       try {
         await new Promise((resolve) => requestAnimationFrame(resolve));
         const payloadRows = await selectedPayloadRows(scope);
         if (!payloadRows.selectedCount) {
-          statusEl.textContent = "Select at least one item to optimize.";
+          setStatusText("Select at least one item to optimize.");
           return;
         }
-        statusEl.textContent = "Starting prompt optimization...";
+        setStatusText("Starting prompt optimization...");
         markLoadedModel(modelSelect.value);
         const started = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/optimize/start", {
           method: "POST",
@@ -4152,7 +4250,7 @@ class TimelineEditor {
           data = await fetchTimelineImageJson(`/wdc_ltx_prompt_optimizer/optimize/status?job_id=${encodeURIComponent(started.job_id)}`);
           const progress = data.progress || {};
           const suffix = progress.current != null && progress.total != null ? ` (${progress.current} / ${progress.total})` : "";
-          statusEl.textContent = `${data.message || "Working..."}${suffix}`;
+          setStatusText(`${data.message || "Working..."}${suffix}`);
           updateProgressBar(progress, true);
           if (data.state === "completed") break;
           if (data.state === "failed") throw new Error(data.error || data.message || "Prompt optimization failed.");
@@ -4164,10 +4262,10 @@ class TimelineEditor {
           if (!state) continue;
           state.generated.value = kind === "reference" ? (result.description || "") : (result.prompt || "");
         }
-        statusEl.textContent = `Generated ${data.results?.length || 0} item${(data.results?.length || 0) === 1 ? "" : "s"}.`;
+        setStatusText(`Generated ${data.results?.length || 0} item${(data.results?.length || 0) === 1 ? "" : "s"}.`);
         updateProgressBar({ ...(data.progress || {}), percent: 100, eta_seconds: 0, estimated: false }, true);
       } catch (err) {
-        statusEl.textContent = err.message;
+        setStatusText(err.message);
       } finally {
         setBusy(false);
       }
@@ -4207,6 +4305,7 @@ class TimelineEditor {
         ? "Custom prompt template saved locally."
         : "Using the default motion-only prompt template.";
       await this.loadPromptOptimizerModels(modelSelect, statusEl);
+      refreshControlState();
     };
 
     editTemplateBtn.addEventListener("click", () => {
@@ -4309,12 +4408,13 @@ class TimelineEditor {
     document.body.appendChild(overlay);
     renderRows();
     setBusy(false);
+    startWorkflowRunningSync();
     if (this.privacyLocked) {
-      statusEl.textContent = "Private timeline data is locked. Decrypt it before optimizing prompts.";
+      setStatusText("Private timeline data is locked. Decrypt it before optimizing prompts.");
       setBusy(false);
     } else {
       refreshOptimizerStatus().catch((err) => {
-        statusEl.textContent = err.message;
+        setStatusText(err.message);
       });
     }
   }
