@@ -1387,7 +1387,7 @@ const STYLES = `
   }
   .pr-prompt-optimizer-controls {
     display: grid;
-    grid-template-columns: minmax(180px, 1fr) 150px auto auto;
+    grid-template-columns: minmax(180px, 1fr) 150px repeat(4, 32px);
     gap: 8px;
     align-items: center;
     margin-bottom: 8px;
@@ -1490,6 +1490,36 @@ const STYLES = `
   .pr-prompt-template-toolbar button:hover {
     background: #444;
   }
+  .pr-prompt-icon-btn {
+    width: 32px;
+    height: 32px;
+    padding: 5px !important;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #222 !important;
+    color: #ddd !important;
+    border: 1px solid #555 !important;
+    border-radius: 4px !important;
+    cursor: pointer;
+    flex: 0 0 32px;
+  }
+  .pr-prompt-icon-btn:hover {
+    background: #333 !important;
+  }
+  .pr-prompt-icon-btn:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+  .pr-prompt-icon-btn svg {
+    width: 17px;
+    height: 17px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
   .pr-prompt-mode {
     display: flex;
     background: #151515;
@@ -1518,6 +1548,26 @@ const STYLES = `
     max-height: 58vh;
     overflow: auto;
     padding: 2px;
+  }
+  .pr-prompt-optimizer-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+  }
+  .pr-prompt-optimizer-section-title {
+    color: #ddd;
+    font-size: 12px;
+    font-weight: 700;
+    margin: 6px 0 0;
+  }
+  .pr-prompt-optimizer-section-empty {
+    color: #888;
+    font-size: 11px;
+    padding: 8px;
+    background: #181818;
+    border: 1px solid #333;
+    border-radius: 5px;
   }
   .pr-prompt-optimizer-row {
     display: grid;
@@ -1549,11 +1599,18 @@ const STYLES = `
     height: 22px;
     padding: 0;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border: 1px solid #444;
     border-radius: 4px;
     background: #262626;
     color: #ddd;
     cursor: pointer;
+  }
+  .pr-prompt-optimizer-height-controls button svg {
+    width: 13px;
+    height: 13px;
   }
   .pr-prompt-optimizer-height-controls button:hover {
     background: #333;
@@ -1620,6 +1677,44 @@ const STYLES = `
     line-height: 1.35;
     box-sizing: border-box;
     width: 100%;
+  }
+  .pr-prompt-template-editor textarea::selection,
+  .pr-prompt-optimizer-field textarea::selection {
+    color: #fff !important;
+    background: #2f6fe8 !important;
+    -webkit-text-fill-color: #fff !important;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-field textarea {
+    color: transparent !important;
+    caret-color: transparent !important;
+    text-shadow: none !important;
+    -webkit-text-fill-color: transparent !important;
+    user-select: none;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-field textarea::placeholder {
+    color: transparent !important;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-field textarea::selection {
+    color: transparent !important;
+    background: transparent !important;
+    -webkit-text-fill-color: transparent !important;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-row:hover .pr-prompt-optimizer-field textarea,
+  .pr-prompt-optimizer-grid.show-images .pr-prompt-optimizer-field textarea {
+    color: #e0e0e0 !important;
+    caret-color: auto !important;
+    -webkit-text-fill-color: #e0e0e0 !important;
+    user-select: text;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-row:hover .pr-prompt-optimizer-field textarea::placeholder,
+  .pr-prompt-optimizer-grid.show-images .pr-prompt-optimizer-field textarea::placeholder {
+    color: #777 !important;
+  }
+  .pr-prompt-optimizer-grid.hide-images .pr-prompt-optimizer-row:hover .pr-prompt-optimizer-field textarea::selection,
+  .pr-prompt-optimizer-grid.show-images .pr-prompt-optimizer-field textarea::selection {
+    color: #fff !important;
+    background: #2f6fe8 !important;
+    -webkit-text-fill-color: #fff !important;
   }
   @media (max-width: 880px) {
     .pr-prompt-optimizer-row {
@@ -1688,6 +1783,13 @@ const ICONS = {
   audio: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`,
   copy: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`,
   insert: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><polyline points="7 10 12 15 17 10"></polyline><path d="M5 21h14"></path></svg>`,
+  save: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`,
+  key: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"></circle><path d="M12 12l8-8"></path><path d="M15 7l2 2"></path><path d="M17 5l2 2"></path></svg>`,
+  reset: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"></path><polyline points="3 3 3 8 8 8"></polyline></svg>`,
+  timeline: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"></line><line x1="4" y1="18" x2="20" y2="18"></line><rect x="6" y="9" width="5" height="6" rx="1"></rect><rect x="13" y="9" width="5" height="6" rx="1"></rect></svg>`,
+  users: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`,
+  generateAll: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"></path><path d="M4 20h16"></path></svg>`,
+  clear: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>`,
   trash: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`,
   text: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>`,
   play: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`,
@@ -3533,6 +3635,8 @@ class TimelineEditor {
       .sort((a, b) => a.start - b.start)
       .map((seg, order) => ({
         id: seg.id,
+        rowKey: `timeline:${seg.id}`,
+        kind: "timeline",
         order,
         type: seg.type || "image",
         start: Math.round(seg.start || 0),
@@ -3543,6 +3647,25 @@ class TimelineEditor {
         imageFolderAlias: seg.imageFolderAlias || "",
         imageB64: seg.imageB64 || "",
         label: seg.imageFile || seg.fileName || (seg.type === "text" ? "Text segment" : "Timeline image"),
+      }));
+  }
+
+  getPromptOptimizerReferences() {
+    return (this.timeline.referenceImages || [])
+      .filter((ref) => ref && ref.enabled !== false)
+      .map((ref, order) => ({
+        id: ref.id,
+        rowKey: `reference:${ref.id || normalizeReferenceLabel(ref.label, order)}`,
+        kind: "reference",
+        order,
+        type: "reference",
+        prompt: ref.description || "",
+        direction: ref.description || "",
+        description: ref.description || "",
+        imageFile: ref.imageFile || "",
+        imageFolderAlias: ref.imageFolderAlias || "",
+        imageB64: ref.imageB64 || "",
+        label: normalizeReferenceLabel(ref.label, order),
       }));
   }
 
@@ -3605,7 +3728,8 @@ class TimelineEditor {
     this.closePromptOptimizer();
     this.setPromptOptimizerActive(true);
 
-    const rows = this.getPromptOptimizerSegments();
+    const timelineRows = this.getPromptOptimizerSegments();
+    const referenceRows = this.getPromptOptimizerReferences();
     const overlay = document.createElement("div");
     overlay.className = "pr-image-browser-dialog pr-prompt-optimizer-dialog";
     overlay.innerHTML = `
@@ -3617,21 +3741,23 @@ class TimelineEditor {
             <button class="mode active" type="button" data-mode="sfw">SFW</button>
             <button class="mode" type="button" data-mode="nsfw">NSFW</button>
           </div>
-          <button class="edit-template" type="button">Prompt</button>
-          <button class="generate" type="button">Generate</button>
+          <button class="edit-template pr-prompt-icon-btn" type="button" title="Edit prompt template" aria-label="Edit prompt template">${ICONS.text}</button>
+          <button class="generate-timeline pr-prompt-icon-btn" type="button" title="Generate timeline prompts" aria-label="Generate timeline prompts">${ICONS.timeline}</button>
+          <button class="generate-references pr-prompt-icon-btn" type="button" title="Generate reference descriptions" aria-label="Generate reference descriptions">${ICONS.users}</button>
+          <button class="generate-all pr-prompt-icon-btn" type="button" title="Generate timeline prompts and reference descriptions" aria-label="Generate timeline prompts and reference descriptions">${ICONS.generateAll}</button>
         </div>
         <div class="pr-prompt-auth-row">
           <span class="auth-status">HF token: checking...</span>
           <input class="hf-token" type="password" autocomplete="off" placeholder="hf_... access token">
-          <button class="save-token" type="button">Save</button>
-          <button class="clear-token" type="button">Clear</button>
+          <button class="save-token pr-prompt-icon-btn" type="button" title="Save Hugging Face token" aria-label="Save Hugging Face token">${ICONS.key}</button>
+          <button class="clear-token pr-prompt-icon-btn" type="button" title="Clear Hugging Face token" aria-label="Clear Hugging Face token">${ICONS.clear}</button>
         </div>
         <div class="pr-prompt-template-editor">
           <textarea class="prompt-template" spellcheck="false"></textarea>
           <div class="pr-prompt-template-toolbar">
             <span class="prompt-template-status">Default prompt template.</span>
-            <button class="save-template" type="button">Save Prompt</button>
-            <button class="reset-template" type="button">Reset Default</button>
+            <button class="save-template pr-prompt-icon-btn" type="button" title="Save prompt template" aria-label="Save prompt template">${ICONS.save}</button>
+            <button class="reset-template pr-prompt-icon-btn" type="button" title="Reset default prompt template" aria-label="Reset default prompt template">${ICONS.reset}</button>
           </div>
         </div>
         <div class="pr-prompt-optimizer-status"></div>
@@ -3644,7 +3770,7 @@ class TimelineEditor {
         <div class="pr-prompt-optimizer-grid"></div>
         <div class="pr-image-browser-actions">
           <button class="cancel" type="button">Cancel</button>
-          <button class="replace" type="button">Replace</button>
+          <button class="replace" type="button">Apply</button>
         </div>
       </div>`;
 
@@ -3665,7 +3791,9 @@ class TimelineEditor {
     const saveTemplateBtn = overlay.querySelector(".save-template");
     const resetTemplateBtn = overlay.querySelector(".reset-template");
     const grid = overlay.querySelector(".pr-prompt-optimizer-grid");
-    const generateBtn = overlay.querySelector(".generate");
+    const generateTimelineBtn = overlay.querySelector(".generate-timeline");
+    const generateReferencesBtn = overlay.querySelector(".generate-references");
+    const generateAllBtn = overlay.querySelector(".generate-all");
     const replaceBtn = overlay.querySelector(".replace");
     const cancelBtn = overlay.querySelector(".cancel");
     const modeButtons = [...overlay.querySelectorAll(".mode")];
@@ -3744,7 +3872,9 @@ class TimelineEditor {
       if (state.increaseHeight) state.increaseHeight.disabled = this.privacyLocked || target >= rowTextMaxHeight;
     };
     const setBusy = (busy) => {
-      generateBtn.disabled = busy || this.privacyLocked;
+      generateTimelineBtn.disabled = busy || this.privacyLocked || !timelineRows.length;
+      generateReferencesBtn.disabled = busy || this.privacyLocked || !referenceRows.length;
+      generateAllBtn.disabled = busy || this.privacyLocked || (!timelineRows.length && !referenceRows.length);
       replaceBtn.disabled = busy || this.privacyLocked;
       modelSelect.disabled = busy || this.privacyLocked;
       hfTokenInput.disabled = busy || this.privacyLocked;
@@ -3764,26 +3894,36 @@ class TimelineEditor {
     const renderRows = () => {
       grid.innerHTML = "";
       rowState.clear();
-      if (!rows.length) {
-        const empty = document.createElement("div");
-        empty.className = "pr-prompt-optimizer-status";
-        empty.textContent = "No timeline segments are available to optimize.";
-        grid.appendChild(empty);
-        generateBtn.disabled = true;
-        replaceBtn.disabled = true;
-        return;
-      }
 
-      for (const item of rows) {
+      const renderSection = (title, items, emptyText) => {
+        const section = document.createElement("div");
+        section.className = "pr-prompt-optimizer-section";
+
+        const heading = document.createElement("div");
+        heading.className = "pr-prompt-optimizer-section-title";
+        heading.textContent = title;
+        section.appendChild(heading);
+
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "pr-prompt-optimizer-section-empty";
+          empty.textContent = emptyText;
+          section.appendChild(empty);
+          grid.appendChild(section);
+          return;
+        }
+
+        for (const item of items) {
         const row = document.createElement("div");
         row.className = "pr-prompt-optimizer-row";
-        row.dataset.segmentId = item.id;
+        row.dataset.itemId = item.id;
+        row.dataset.kind = item.kind;
 
         const check = document.createElement("input");
         check.type = "checkbox";
         check.className = "pr-prompt-optimizer-check";
         check.checked = true;
-        check.title = "Optimize this segment";
+        check.title = item.kind === "reference" ? "Optimize this reference" : "Optimize this segment";
 
         const rowTools = document.createElement("div");
         rowTools.className = "pr-prompt-optimizer-row-tools";
@@ -3793,12 +3933,14 @@ class TimelineEditor {
         heightControls.className = "pr-prompt-optimizer-height-controls";
         const decreaseHeight = document.createElement("button");
         decreaseHeight.type = "button";
-        decreaseHeight.textContent = "-";
+        decreaseHeight.innerHTML = ICONS.minus;
         decreaseHeight.title = "Decrease row height";
+        decreaseHeight.setAttribute("aria-label", "Decrease row height");
         const increaseHeight = document.createElement("button");
         increaseHeight.type = "button";
-        increaseHeight.textContent = "+";
+        increaseHeight.innerHTML = ICONS.plus;
         increaseHeight.title = "Increase row height";
+        increaseHeight.setAttribute("aria-label", "Increase row height");
         heightControls.appendChild(decreaseHeight);
         heightControls.appendChild(increaseHeight);
         rowTools.appendChild(heightControls);
@@ -3818,10 +3960,14 @@ class TimelineEditor {
         directionWrap.className = "pr-prompt-optimizer-field";
         const directionLabel = document.createElement("span");
         directionLabel.className = "pr-prompt-optimizer-label";
-        directionLabel.textContent = `${item.order + 1}. ${item.label}`;
+        directionLabel.textContent = item.kind === "reference"
+          ? `${item.order + 1}. ${item.label} description`
+          : `${item.order + 1}. ${item.label}`;
         const direction = document.createElement("textarea");
         direction.value = item.prompt;
-        direction.placeholder = "Direction or existing segment prompt...";
+        direction.placeholder = item.kind === "reference"
+          ? "Optional character description or requested clothing/features..."
+          : "Direction or existing segment prompt...";
         directionWrap.appendChild(directionLabel);
         directionWrap.appendChild(direction);
 
@@ -3829,10 +3975,12 @@ class TimelineEditor {
         generatedWrap.className = "pr-prompt-optimizer-field";
         const generatedLabel = document.createElement("span");
         generatedLabel.className = "pr-prompt-optimizer-label";
-        generatedLabel.textContent = "Optimized LTX prompt";
+        generatedLabel.textContent = item.kind === "reference" ? "Generated reference description" : "Optimized LTX prompt";
         const generated = document.createElement("textarea");
         generated.value = item.prompt;
-        generated.placeholder = "Generated prompt will appear here...";
+        generated.placeholder = item.kind === "reference"
+          ? "Generated character description will appear here..."
+          : "Generated prompt will appear here...";
         generatedWrap.appendChild(generatedLabel);
         generatedWrap.appendChild(generated);
 
@@ -3845,7 +3993,7 @@ class TimelineEditor {
           increaseHeight,
           textHeight: rowTextDefaultHeight,
         };
-        rowState.set(item.id, state);
+        rowState.set(item.rowKey, state);
         setRowTextareaHeight(state, rowTextDefaultHeight);
 
         decreaseHeight.addEventListener("click", (event) => {
@@ -3871,17 +4019,31 @@ class TimelineEditor {
         row.appendChild(thumb);
         row.appendChild(directionWrap);
         row.appendChild(generatedWrap);
-        grid.appendChild(row);
-      }
+          section.appendChild(row);
+        }
+
+        grid.appendChild(section);
+      };
+
+      renderSection("Timeline Prompts", timelineRows, "No timeline segments are available to optimize.");
+      renderSection("Character References", referenceRows, "No character references are available to describe.");
+      if (!timelineRows.length && !referenceRows.length) replaceBtn.disabled = true;
     };
 
-    const selectedPayloadRows = async () => {
-      const payloadRows = [];
-      const selectedRows = rows.filter((item) => rowState.get(item.id)?.check.checked);
+    const selectedPayloadRows = async (scope = "all") => {
+      const includeTimeline = scope === "all" || scope === "timeline";
+      const includeReferences = scope === "all" || scope === "reference";
+      const payloadSegments = [];
+      const payloadReferences = [];
+      const selectedRows = [...timelineRows, ...referenceRows].filter((item) => {
+        if (item.kind === "timeline" && !includeTimeline) return false;
+        if (item.kind === "reference" && !includeReferences) return false;
+        return rowState.get(item.rowKey)?.check.checked;
+      });
       let preparedCount = 0;
-      for (const item of rows) {
-        const state = rowState.get(item.id);
-        const selected = !!state?.check.checked;
+      for (const item of timelineRows) {
+        const state = rowState.get(item.rowKey);
+        const selected = includeTimeline && !!state?.check.checked;
         const payload = {
           id: item.id,
           order: item.order,
@@ -3905,9 +4067,34 @@ class TimelineEditor {
           payload.image_data = await this.segmentImageDataUrl(seg);
           await new Promise((resolve) => setTimeout(resolve, 0));
         }
-        payloadRows.push(payload);
+        payloadSegments.push(payload);
       }
-      return payloadRows;
+      for (const item of referenceRows) {
+        const state = rowState.get(item.rowKey);
+        const selected = includeReferences && !!state?.check.checked;
+        const payload = {
+          id: item.id,
+          order: item.order,
+          label: item.label || "",
+          selected,
+          direction: state?.direction.value || "",
+          description: state?.direction.value || "",
+          imageFile: item.imageFile || "",
+          imageFolderAlias: item.imageFolderAlias || "",
+        };
+
+        if (selected && !payload.imageFile && item.imageB64) {
+          preparedCount += 1;
+          statusEl.textContent = `Preparing image ${preparedCount} of ${selectedRows.length} for upload...`;
+          updateProgressBar({ percent: selectedRows.length ? (preparedCount - 1) / selectedRows.length * 100 : 0 }, true);
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const ref = (this.timeline.referenceImages || []).find((candidate) => candidate.id === item.id);
+          payload.image_data = await this.segmentImageDataUrl(ref);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        payloadReferences.push(payload);
+      }
+      return { segments: payloadSegments, references: payloadReferences, selectedCount: selectedRows.length };
     };
 
     modeButtons.forEach((button) => {
@@ -3921,19 +4108,18 @@ class TimelineEditor {
       if (previous && previous !== modelSelect.value) unloadLoadedModel(previous);
     });
 
-    generateBtn.addEventListener("click", async () => {
+    const runGenerate = async (scope) => {
       if (this.privacyLocked) return;
-      const selectedCount = [...rowState.values()].filter((state) => state.check.checked).length;
-      if (!selectedCount) {
-        statusEl.textContent = "Select at least one segment to optimize.";
-        return;
-      }
       setBusy(true);
-      statusEl.textContent = "Preparing selected segments...";
+      statusEl.textContent = "Preparing selected items...";
       updateProgressBar({ percent: 0 }, true);
       try {
         await new Promise((resolve) => requestAnimationFrame(resolve));
-        const segments = await selectedPayloadRows();
+        const payloadRows = await selectedPayloadRows(scope);
+        if (!payloadRows.selectedCount) {
+          statusEl.textContent = "Select at least one item to optimize.";
+          return;
+        }
         statusEl.textContent = "Starting prompt optimization...";
         markLoadedModel(modelSelect.value);
         const started = await fetchTimelineImageJson("/wdc_ltx_prompt_optimizer/optimize/start", {
@@ -3944,7 +4130,8 @@ class TimelineEditor {
             mode,
             duration_frames: this.getDurationFrames(),
             frame_rate: this.getFrameRate(),
-            segments,
+            segments: payloadRows.segments,
+            references: payloadRows.references,
           }),
         });
         let data = null;
@@ -3959,29 +4146,40 @@ class TimelineEditor {
           await new Promise((resolve) => setTimeout(resolve, 750));
         }
         for (const result of data.results || []) {
-          const state = rowState.get(result.id);
-          if (state) state.generated.value = result.prompt || "";
+          const kind = result.kind === "reference" ? "reference" : "timeline";
+          const state = rowState.get(`${kind}:${result.id}`);
+          if (!state) continue;
+          state.generated.value = kind === "reference" ? (result.description || "") : (result.prompt || "");
         }
-        statusEl.textContent = `Generated ${data.results?.length || 0} prompt${(data.results?.length || 0) === 1 ? "" : "s"}.`;
+        statusEl.textContent = `Generated ${data.results?.length || 0} item${(data.results?.length || 0) === 1 ? "" : "s"}.`;
         updateProgressBar({ ...(data.progress || {}), percent: 100, eta_seconds: 0, estimated: false }, true);
       } catch (err) {
         statusEl.textContent = err.message;
       } finally {
         setBusy(false);
       }
-    });
+    };
+
+    generateTimelineBtn.addEventListener("click", () => runGenerate("timeline"));
+    generateReferencesBtn.addEventListener("click", () => runGenerate("reference"));
+    generateAllBtn.addEventListener("click", () => runGenerate("all"));
 
     replaceBtn.addEventListener("click", () => {
       if (this.privacyLocked) return;
       for (const state of rowState.values()) {
         if (!state.check.checked) continue;
-        const seg = this.timeline.segments.find((candidate) => candidate.id === state.item.id);
-        if (!seg) continue;
-        seg.prompt = state.generated.value || "";
+        if (state.item.kind === "reference") {
+          const ref = (this.timeline.referenceImages || []).find((candidate) => candidate.id === state.item.id);
+          if (ref) ref.description = state.generated.value || "";
+        } else {
+          const seg = this.timeline.segments.find((candidate) => candidate.id === state.item.id);
+          if (seg) seg.prompt = state.generated.value || "";
+        }
       }
       this.flushPromptEdit({ skipNodeResize: true });
       this.updateUIFromSelection();
       this.commitChanges(true);
+      this.renderReferencesPanel();
       this.render();
       if (window.app && window.app.graph) window.app.graph.setDirtyCanvas(true, true);
       unloadLoadedModel();
@@ -4076,7 +4274,20 @@ class TimelineEditor {
     for (const eventName of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"]) {
       panel.addEventListener(eventName, (event) => event.stopPropagation());
     }
-    for (const input of [hfTokenInput, saveTokenBtn, clearTokenBtn, editTemplateBtn, promptTemplateInput, saveTemplateBtn, resetTemplateBtn, modelSelect]) {
+    for (const input of [
+      hfTokenInput,
+      saveTokenBtn,
+      clearTokenBtn,
+      editTemplateBtn,
+      promptTemplateInput,
+      saveTemplateBtn,
+      resetTemplateBtn,
+      modelSelect,
+      generateTimelineBtn,
+      generateReferencesBtn,
+      generateAllBtn,
+      replaceBtn,
+    ]) {
       for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput"]) {
         input.addEventListener(eventName, (event) => event.stopPropagation());
       }
@@ -4084,6 +4295,7 @@ class TimelineEditor {
 
     document.body.appendChild(overlay);
     renderRows();
+    setBusy(false);
     if (this.privacyLocked) {
       statusEl.textContent = "Private timeline data is locked. Decrypt it before optimizing prompts.";
       setBusy(false);

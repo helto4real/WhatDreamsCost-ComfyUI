@@ -51,8 +51,10 @@ GEMMA4_E4B_UNCENSORED_MMPROJ_URL = (
     "mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf"
 )
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 SETTINGS_FILE = CONFIG_DIR / "ltx_prompt_optimizer_settings.json"
 TIMING_FILE = CONFIG_DIR / "ltx_prompt_optimizer_timing.json"
+REFERENCE_CAPTION_PROMPT_FILE = ASSETS_DIR / "prompts" / "ltx_reference_caption_prompt.txt"
 OPTIMIZER_IMAGE_MAX_SIDE = 768
 DEFAULT_OPTIMIZER_PROMPT_TEMPLATE = (
     "You are optimizing a local prompt for LTX Director Prompt Relay. "
@@ -70,6 +72,32 @@ DEFAULT_OPTIMIZER_PROMPT_TEMPLATE = (
     "User direction to preserve: {direction}. "
     "{continuity}"
 )
+REFERENCE_CAPTION_PROMPT_FALLBACK = (
+    "You are writing a character reference caption for LTX Director identity conditioning.\n\n"
+    "Use the supplied reference image as the identity source. Write exactly one concise descriptive caption "
+    "for the referenced subject. The caption must help a video model preserve likeness across prompts.\n\n"
+    "If the user description is empty, describe only stable visual identity details: subject type, apparent "
+    "gender or age category when visible, face/head features, hair/fur/skin/markings, body build, clothing, "
+    "accessories, and other distinctive appearance cues.\n\n"
+    "If the user description requests different clothes or changed features, follow the user description for "
+    "those requested changes while preserving the subject's stable likeness cues from the image.\n\n"
+    "Do not describe actions, poses, gestures, camera movement, framing, background, lighting, mood, scene "
+    "events, or story. Do not mention that this is a reference image. Do not output bullets, labels, quotes, "
+    "markdown, negative prompts, or explanations.\n\n"
+    "User description to respect: {direction}"
+)
+
+
+def load_reference_caption_prompt_template(path: str | os.PathLike[str] | None = None) -> str:
+    prompt_path = Path(path) if path is not None else REFERENCE_CAPTION_PROMPT_FILE
+    try:
+        text = prompt_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    return text or REFERENCE_CAPTION_PROMPT_FALLBACK
+
+
+DEFAULT_REFERENCE_CAPTION_PROMPT_TEMPLATE = load_reference_caption_prompt_template()
 
 
 @dataclass(frozen=True)
@@ -1035,6 +1063,34 @@ def fallback_optimize_segment(
     )
 
 
+def reference_direction_text(reference: dict[str, Any] | None) -> str:
+    if not isinstance(reference, dict):
+        return ""
+    return clean_prompt_text(reference.get("direction") or reference.get("description") or reference.get("prompt"))
+
+
+def build_reference_caption_instruction(
+    reference: dict[str, Any],
+    template: str | None = None,
+) -> str:
+    values = {
+        "direction": reference_direction_text(reference) or "none",
+        "label": clean_prompt_text(reference.get("label") or reference.get("id")) or "reference",
+    }
+    try:
+        return (template or DEFAULT_REFERENCE_CAPTION_PROMPT_TEMPLATE).format_map(values)
+    except (KeyError, ValueError) as exc:
+        raise PromptOptimizerError(f"Could not format reference caption prompt template: {exc}") from exc
+
+
+def fallback_reference_caption(reference: dict[str, Any]) -> str:
+    direction = reference_direction_text(reference)
+    if direction:
+        return direction
+    label = clean_prompt_text(reference.get("label") or "reference subject")
+    return f"{label} with distinctive visible identity features, clothing, accessories, and appearance cues"
+
+
 def build_optimizer_instruction(
     segment: dict[str, Any],
     mode: str,
@@ -1520,6 +1576,15 @@ def _florence_context_image(segments: list[Any], index: int, include_neighbors: 
     return next_image[1] if next_image is not None else None
 
 
+def _reference_context_images(reference: dict[str, Any]) -> list[tuple[str, Image.Image]]:
+    image = decode_image(reference)
+    return [("Reference", image)] if image is not None else []
+
+
+def _reference_context_image(reference: dict[str, Any]) -> Image.Image | None:
+    return decode_image(reference)
+
+
 def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[str, Any]:
     status = status_cb or _noop_status
     status("Checking selected model...")
@@ -1527,21 +1592,26 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
     mode = str(payload.get("mode") or "sfw").lower()
     if mode not in {"sfw", "nsfw"}:
         raise PromptOptimizerError("mode must be 'sfw' or 'nsfw'")
-    segments = payload.get("segments")
+    segments = payload.get("segments", [])
+    references = payload.get("references", [])
     if not isinstance(segments, list):
         raise PromptOptimizerError("segments must be a list")
+    if not isinstance(references, list):
+        raise PromptOptimizerError("references must be a list")
 
     selected = [seg for seg in segments if isinstance(seg, dict) and seg.get("selected", True)]
-    if not selected:
-        raise PromptOptimizerError("Select at least one segment to optimize.")
+    selected_references = [ref for ref in references if isinstance(ref, dict) and ref.get("selected", True)]
+    if not selected and not selected_references:
+        raise PromptOptimizerError("Select at least one segment or reference to optimize.")
 
     path = ensure_model_downloaded(spec, status)
     total = len(segments)
-    selected_total = len(selected)
+    selected_total = len(selected) + len(selected_references)
     generated_count = 0
     results = []
     generated_by_id: dict[str, str] = {}
     prompt_template = active_prompt_template()
+    reference_prompt_template = DEFAULT_REFERENCE_CAPTION_PROMPT_TEMPLATE
 
     for index, segment in enumerate(segments):
         seg_id = str(segment.get("id") or "")
@@ -1597,7 +1667,71 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
         if not optimized:
             optimized = fallback_optimize_segment(segment, mode, index, total, previous_prompt, next_prompt)
         generated_by_id[seg_id] = optimized
-        results.append({"id": seg_id, "prompt": optimized})
+        results.append({"id": seg_id, "kind": "timeline", "prompt": optimized})
+
+    for reference_index, reference in enumerate(references):
+        if not isinstance(reference, dict) or not reference.get("selected", True):
+            continue
+        ref_id = str(reference.get("id") or reference.get("label") or "")
+        generated_count += 1
+        instruction = build_reference_caption_instruction(reference, reference_prompt_template)
+
+        if spec.backend == "fallback":
+            status(
+                f"Generating fallback reference caption {generated_count} of {selected_total}...",
+                generated_count,
+                selected_total,
+            )
+            optimized = fallback_reference_caption(reference)
+            status(f"Completed reference caption {generated_count} of {selected_total}.", generated_count, selected_total)
+        else:
+            status(f"Preparing reference image context {generated_count} of {selected_total}...", generated_count, selected_total)
+            if spec.backend == "qwen":
+                images = _reference_context_images(reference)
+                if not images and not reference_direction_text(reference):
+                    optimized = fallback_reference_caption(reference)
+                else:
+                    prompt_optimizer_vram_preflight(status)
+                    loaded = _load_qwen_model(spec, path, status)  # type: ignore[arg-type]
+                    status(f"Generating reference caption {generated_count} of {selected_total}...", generated_count, selected_total)
+                    optimized = _generate_qwen(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
+            elif spec.backend == "florence":
+                image = _reference_context_image(reference)
+                if image is None:
+                    optimized = fallback_reference_caption(reference)
+                else:
+                    prompt_optimizer_vram_preflight(status)
+                    loaded = _load_florence_model(spec, path, status)  # type: ignore[arg-type]
+                    status(f"Generating reference caption {generated_count} of {selected_total}...", generated_count, selected_total)
+                    optimized = _generate_florence(spec, path, image, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
+            elif spec.backend == "llama_cpp_vision":
+                images = _reference_context_images(reference)
+                if not images and not reference_direction_text(reference):
+                    optimized = fallback_reference_caption(reference)
+                else:
+                    prompt_optimizer_vram_preflight(status)
+                    loaded = _load_llama_cpp_vision_model(spec, path, status)  # type: ignore[arg-type]
+                    status(f"Generating reference caption {generated_count} of {selected_total}...", generated_count, selected_total)
+                    optimized = _generate_llama_cpp_vision(spec, path, images, instruction, _noop_status, loaded=loaded)  # type: ignore[arg-type]
+            elif spec.backend == "gemma_safetensors":
+                status(f"Generating reference caption {generated_count} of {selected_total}...", generated_count, selected_total)
+                optimized = _generate_gemma_safetensors(spec, path, instruction, _noop_status)  # type: ignore[arg-type]
+            else:
+                raise PromptOptimizerError(f"Unsupported optimizer backend: {spec.backend}")
+            status(f"Completed reference caption {generated_count} of {selected_total}.", generated_count, selected_total)
+            status(f"Cleaning generated reference caption {generated_count} of {selected_total}...", generated_count, selected_total)
+            optimized = clean_prompt_text(optimized)
+
+        if not optimized:
+            optimized = fallback_reference_caption(reference)
+        results.append(
+            {
+                "id": ref_id,
+                "kind": "reference",
+                "label": clean_prompt_text(reference.get("label") or f"reference {reference_index + 1}"),
+                "description": optimized,
+            }
+        )
 
     status(f"Done. Generated {len(results)} prompt{'s' if len(results) != 1 else ''}.", len(results), selected_total)
     return {
@@ -1610,9 +1744,14 @@ def optimize_segments(payload: dict[str, Any], status_cb: Any = None) -> dict[st
 
 def _phase_for_message(message: str) -> str:
     lower = message.lower()
-    if lower.startswith("generating prompt") or lower.startswith("generating fallback prompt"):
+    if (
+        lower.startswith("generating prompt")
+        or lower.startswith("generating fallback prompt")
+        or lower.startswith("generating reference caption")
+        or lower.startswith("generating fallback reference caption")
+    ):
         return "generating"
-    if lower.startswith("completed prompt"):
+    if lower.startswith("completed prompt") or lower.startswith("completed reference caption"):
         return "completed_prompt"
     if lower.startswith("cleaning"):
         return "cleaning"

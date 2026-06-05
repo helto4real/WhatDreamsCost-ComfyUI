@@ -209,6 +209,12 @@ class LTXPromptOptimizerTests(unittest.TestCase):
             self.assertFalse(reset["promptTemplateConfigured"])
             self.assertEqual(reset["promptTemplate"], optimizer.DEFAULT_OPTIMIZER_PROMPT_TEMPLATE)
 
+    def test_reference_caption_prompt_file_loads(self):
+        text = optimizer.load_reference_caption_prompt_template()
+        self.assertIn("{direction}", text)
+        self.assertIn("identity conditioning", text)
+        self.assertIn("Do not describe actions", text)
+
     def test_clearing_hf_token_preserves_prompt_template(self):
         with tempfile.TemporaryDirectory() as tmp:
             optimizer.save_hf_token("hf_test_token", tmp)
@@ -544,6 +550,20 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertIn("no current image", text)
         self.assertIn("text-only timeline segment", text)
 
+    def test_reference_caption_instruction_empty_description_is_identity_only(self):
+        text = optimizer.build_reference_caption_instruction({"id": "ref1", "label": "image1", "description": ""})
+        self.assertIn("stable visual identity details", text)
+        self.assertIn("User description to respect: none", text)
+        self.assertIn("Do not describe actions", text)
+
+    def test_reference_caption_instruction_respects_user_description(self):
+        text = optimizer.build_reference_caption_instruction(
+            {"id": "ref1", "label": "image1", "description": "same woman wearing a blue blazer"}
+        )
+        self.assertIn("same woman wearing a blue blazer", text)
+        self.assertIn("follow the user description", text)
+        self.assertIn("preserving the subject's stable likeness cues", text)
+
     def test_fallback_optimize_uses_direction(self):
         text = optimizer.fallback_optimize_segment(
             {"id": "a", "direction": "The woman smiles", "type": "image"},
@@ -603,6 +623,40 @@ class LTXPromptOptimizerTests(unittest.TestCase):
         self.assertTrue(any("Checking selected model" in message for message, _, _ in messages))
         self.assertTrue(any("Generating fallback prompt" in message for message, _, _ in messages))
         self.assertTrue(any("Done. Generated 1 prompt" in message for message, _, _ in messages))
+
+    def test_optimize_fallback_returns_mixed_timeline_and_reference_results(self):
+        result = optimizer.optimize_segments(
+            {
+                "model": "fallback_text_backend",
+                "mode": "sfw",
+                "segments": [{"id": "a", "selected": True, "prompt": "A person turns", "type": "image"}],
+                "references": [
+                    {
+                        "id": "ref1",
+                        "label": "image1",
+                        "selected": True,
+                        "description": "a blonde woman in a green jacket",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual([item["kind"] for item in result["results"]], ["timeline", "reference"])
+        self.assertIn("A person turns", result["results"][0]["prompt"])
+        self.assertEqual(result["results"][1]["description"], "a blonde woman in a green jacket")
+
+    def test_optimize_fallback_reference_without_description_uses_generic_identity_caption(self):
+        result = optimizer.optimize_segments(
+            {
+                "model": "fallback_text_backend",
+                "mode": "sfw",
+                "references": [{"id": "ref1", "label": "image1", "selected": True, "description": ""}],
+            }
+        )
+
+        self.assertEqual(result["results"][0]["kind"], "reference")
+        self.assertIn("image1", result["results"][0]["description"])
+        self.assertIn("identity features", result["results"][0]["description"])
 
     def test_optimize_qwen_uses_generated_previous_and_next_hint(self):
         calls = []
