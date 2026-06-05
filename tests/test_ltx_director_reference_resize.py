@@ -817,7 +817,7 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 3, 1, 1))
         self.assertTrue(torch.equal(cropped["samples"], latent["samples"][:, :, :3]))
 
-    def test_crop_reference_tail_uses_hidden_count_when_metadata_is_too_long(self):
+    def test_crop_reference_tail_uses_hidden_count_plus_extra_when_metadata_is_too_long(self):
         latent = {
             "samples": torch.zeros((1, 128, 5, 2, 2), dtype=torch.float32),
             "noise_mask": torch.ones((1, 1, 5, 1, 1), dtype=torch.float32),
@@ -827,10 +827,10 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
 
         self.assertEqual(clean_pixel_frames, 33)
-        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 4, 2, 2))
-        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 4, 1, 1))
+        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 2, 2, 2))
+        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 2, 1, 1))
 
-    def test_crop_reference_tail_keeps_normal_clean_metadata_target(self):
+    def test_crop_reference_tail_trims_two_extra_latents_for_hidden_references(self):
         latent = {
             "samples": torch.zeros((1, 128, 5, 2, 2), dtype=torch.float32),
             "noise_mask": torch.ones((1, 1, 5, 1, 1), dtype=torch.float32),
@@ -840,8 +840,8 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         cropped, clean_pixel_frames = ltx_director.LTXDirectorCropReferenceTail.execute(latent, guide_data)
 
         self.assertEqual(clean_pixel_frames, 25)
-        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 4, 2, 2))
-        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 4, 1, 1))
+        self.assertEqual(tuple(cropped["samples"].shape), (1, 128, 2, 2, 2))
+        self.assertEqual(tuple(cropped["noise_mask"].shape), (1, 1, 2, 1, 1))
 
     def test_crop_reference_tail_crops_nested_video_stream_only(self):
         video = torch.arange(1 * 128 * 5 * 2 * 2, dtype=torch.float32).reshape(1, 128, 5, 2, 2)
