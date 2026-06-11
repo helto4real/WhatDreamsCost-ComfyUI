@@ -15,19 +15,31 @@ from ltx_director_references import (
 
 class LTXDirectorReferenceTests(unittest.TestCase):
     def test_parse_reference_tags_marks_supported_and_unsupported_kinds(self):
-        tags = parse_reference_tags("walks with @image1:character and @image2:style")
+        tags = parse_reference_tags("walks with @image1:character[0.65] and @image2:style")
 
         self.assertEqual(
             tags,
             [
-                {"label": "image1", "kind": "character", "token": "@image1:character", "supported": True},
-                {"label": "image2", "kind": "style", "token": "@image2:style", "supported": False},
+                {
+                    "label": "image1",
+                    "kind": "character",
+                    "token": "@image1:character[0.65]",
+                    "supported": True,
+                    "strength_override": 0.65,
+                },
+                {
+                    "label": "image2",
+                    "kind": "style",
+                    "token": "@image2:style",
+                    "supported": False,
+                    "strength_override": None,
+                },
             ],
         )
 
     def test_strip_reference_tags_removes_control_syntax(self):
         self.assertEqual(
-            strip_reference_tags("Alice @image1:character walks, then @image2:style waves."),
+            strip_reference_tags("Alice @image1:character[0.5] walks, then @image2:style waves."),
             "Alice walks, then waves.",
         )
 
@@ -59,7 +71,7 @@ class LTXDirectorReferenceTests(unittest.TestCase):
         ]
 
         self.assertEqual(
-            replace_reference_tags("The subject turns. @image1:character", refs),
+            replace_reference_tags("The subject turns. @image1:character[0.35]", refs),
             "The subject turns. a blonde woman in an olive jacket",
         )
 
@@ -88,7 +100,7 @@ class LTXDirectorReferenceTests(unittest.TestCase):
     def test_build_segment_reference_usage_matches_enabled_known_references(self):
         timeline = {
             "referenceImages": [
-                {"id": "a", "label": "image1", "kind": "character", "imageFile": "a.png"},
+                {"id": "a", "label": "image1", "kind": "character", "imageFile": "a.png", "strength": 0.8},
                 {"id": "b", "label": "image2", "kind": "character", "enabled": False},
             ],
             "segments": [
@@ -96,7 +108,7 @@ class LTXDirectorReferenceTests(unittest.TestCase):
                     "id": "seg",
                     "start": 0,
                     "length": 24,
-                    "prompt": "A @image1:character meets @image2:character and @image3:character",
+                    "prompt": "A @image1:character[0.45] meets @image2:character and @image3:character",
                 }
             ],
         }
@@ -105,7 +117,29 @@ class LTXDirectorReferenceTests(unittest.TestCase):
 
         self.assertEqual(usage[0]["clean_prompt"], "A meets and")
         self.assertEqual([ref["label"] for ref in usage[0]["references"]], ["image1"])
+        self.assertEqual(usage[0]["references"][0]["strength"], 0.45)
+        self.assertEqual(usage[0]["references"][0]["strength_override"], 0.45)
         self.assertEqual([tag["token"] for tag in usage[0]["unknown_tags"]], ["@image2:character", "@image3:character"])
+
+    def test_build_segment_reference_usage_uses_default_strength_without_override(self):
+        timeline = {
+            "referenceImages": [
+                {"id": "a", "label": "image1", "kind": "character", "imageFile": "a.png", "strength": 0.8},
+            ],
+            "segments": [
+                {
+                    "id": "seg",
+                    "start": 0,
+                    "length": 24,
+                    "prompt": "A @image1:character enters",
+                }
+            ],
+        }
+
+        usage = build_segment_reference_usage(timeline, 24)
+
+        self.assertEqual(usage[0]["references"][0]["strength"], 0.8)
+        self.assertIsNone(usage[0]["references"][0]["strength_override"])
 
     def test_reference_usage_errors_separates_missing_character_refs_from_future_kinds(self):
         timeline = {
@@ -115,14 +149,14 @@ class LTXDirectorReferenceTests(unittest.TestCase):
                     "id": "seg",
                     "start": 0,
                     "length": 24,
-                    "prompt": "A @image1:character with @image2:style",
+                    "prompt": "A @image1:character[0.25] with @image2:style",
                 }
             ],
         }
 
         errors = reference_usage_errors(build_segment_reference_usage(timeline, 24))
 
-        self.assertEqual(errors["unknown"], ["@image1:character"])
+        self.assertEqual(errors["unknown"], ["@image1:character[0.25]"])
         self.assertEqual(errors["unsupported"], ["@image2:style"])
 
     def test_build_reference_guide_specs_flattens_segment_scoped_references(self):
@@ -132,7 +166,7 @@ class LTXDirectorReferenceTests(unittest.TestCase):
             ],
             "segments": [
                 {"id": "timeline-image", "start": 0, "length": 8, "type": "image", "imageFile": "scene.png", "prompt": "scene"},
-                {"id": "uses-ref", "start": 8, "length": 8, "type": "text", "prompt": "runs @image1:character"},
+                {"id": "uses-ref", "start": 8, "length": 8, "type": "text", "prompt": "runs @image1:character[0.35]"},
             ],
         }
 
@@ -143,7 +177,8 @@ class LTXDirectorReferenceTests(unittest.TestCase):
         self.assertEqual(specs[0]["label"], "image1")
         self.assertEqual(specs[0]["segment_id"], "uses-ref")
         self.assertEqual(specs[0]["insert_frame"], 8)
-        self.assertEqual(specs[0]["strength"], 0.7)
+        self.assertEqual(specs[0]["strength"], 0.35)
+        self.assertEqual(specs[0]["strength_override"], 0.35)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Mapping
 
 
 SUPPORTED_REFERENCE_KIND = "character"
-REFERENCE_TAG_RE = re.compile(r"@(?P<label>image[1-9]\d*):(?P<kind>[A-Za-z][A-Za-z0-9_-]*)")
+REFERENCE_TAG_RE = re.compile(
+    r"@(?P<label>image[1-9]\d*):(?P<kind>[A-Za-z][A-Za-z0-9_-]*)"
+    r"(?:\[(?P<strength>[^\]]*)\])?"
+)
 
 
 def _safe_bool(value: Any, default: bool = True) -> bool:
@@ -22,9 +26,18 @@ def _safe_bool(value: Any, default: bool = True) -> bool:
 
 def _safe_float(value: Any, default: float = 1.0) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    return parsed if math.isfinite(parsed) else default
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _reference_label(value: Any, fallback_index: int) -> str:
@@ -74,18 +87,20 @@ def normalize_reference_images(value: Any) -> list[dict[str, Any]]:
     return references
 
 
-def parse_reference_tags(prompt: Any) -> list[dict[str, str]]:
+def parse_reference_tags(prompt: Any) -> list[dict[str, Any]]:
     text = str(prompt or "")
-    tags: list[dict[str, str]] = []
+    tags: list[dict[str, Any]] = []
     for match in REFERENCE_TAG_RE.finditer(text):
         label = match.group("label").lower()
         kind = match.group("kind").lower()
+        strength_override = _finite_float_or_none(match.group("strength"))
         tags.append(
             {
                 "label": label,
                 "kind": kind,
                 "token": match.group(0),
                 "supported": kind == SUPPORTED_REFERENCE_KIND,
+                "strength_override": strength_override,
             }
         )
     return tags
@@ -181,7 +196,11 @@ def build_segment_reference_usage(timeline: Any, duration_frames: Any = None) ->
             if ref["label"] in seen:
                 continue
             seen.add(ref["label"])
-            matched.append(ref)
+            matched_ref = dict(ref)
+            matched_ref["strength_override"] = tag.get("strength_override")
+            if tag.get("strength_override") is not None:
+                matched_ref["strength"] = tag["strength_override"]
+            matched.append(matched_ref)
 
         usage.append(
             {

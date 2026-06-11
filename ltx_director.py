@@ -191,12 +191,20 @@ def _reference_substitutions_for_debug(
         if ref is None:
             continue
         description = str(ref.get("description") or "").strip()
+        strength_override = tag.get("strength_override")
+        resolved_strength = (
+            float(strength_override)
+            if strength_override is not None
+            else float(ref.get("strength", 1.0))
+        )
         substitutions.append(
             {
                 "token": tag.get("token"),
                 "label": tag.get("label"),
                 "id": ref.get("id"),
                 "kind": ref.get("kind", "character"),
+                "strength_override": strength_override,
+                "resolved_strength": resolved_strength,
                 "inserted_description": description,
             }
         )
@@ -271,6 +279,7 @@ def _safe_debug_reference_tag(tag: Mapping[str, Any]) -> dict[str, Any]:
         "label": tag.get("label"),
         "kind": tag.get("kind"),
         "supported": bool(tag.get("supported")),
+        "strength_override": tag.get("strength_override"),
     }
 
 
@@ -362,25 +371,28 @@ def _build_director_debug_json(
             if segment_id not in used_by_label[label]:
                 used_by_label[label].append(segment_id)
 
-    hidden_metadata = {}
+    hidden_metadata: dict[Any, list[dict[str, Any]]] = {}
     for ref in guide_data.get("reference_images", []):
         if not isinstance(ref, Mapping):
             continue
         key = ref.get("id") or ref.get("label")
         if not key:
             continue
-        hidden_metadata[key] = {
+        hidden_metadata.setdefault(key, []).append({
             "hidden_tail": bool(ref.get("hidden_tail", False)),
             "insert_frame": ref.get("insert_frame"),
             "clean_latent_frames": ref.get("clean_latent_frames"),
             "clean_pixel_frames": ref.get("clean_pixel_frames"),
-        }
+            "strength": ref.get("strength"),
+        })
 
     references = []
     for ref in configured_references:
         clean_ref = _safe_debug_reference(ref)
-        metadata = hidden_metadata.get(ref.get("id")) or hidden_metadata.get(ref.get("label")) or {}
-        clean_ref.update(metadata)
+        metadata_entries = hidden_metadata.get(ref.get("id")) or hidden_metadata.get(ref.get("label")) or []
+        if metadata_entries:
+            clean_ref.update(metadata_entries[0])
+            clean_ref["hidden_guides"] = metadata_entries
         clean_ref["used_by_segments"] = used_by_label.get(ref.get("label"), [])
         references.append(clean_ref)
 
@@ -834,9 +846,14 @@ def _dedupe_reference_specs(reference_specs: list[dict]) -> list[dict]:
     deduped: list[dict] = []
     index_by_key: dict[str, int] = {}
     for spec in reference_specs:
-        key = str(spec.get("label") or spec.get("id") or "").strip().lower()
-        if not key:
-            key = str(len(deduped))
+        label_key = str(spec.get("label") or spec.get("id") or "").strip().lower()
+        if not label_key:
+            label_key = str(len(deduped))
+        try:
+            strength_key = f"{float(spec.get('strength', 1.0)):.12g}"
+        except (TypeError, ValueError):
+            strength_key = "1"
+        key = f"{label_key}:{strength_key}"
 
         segment_id = spec.get("segment_id")
         if key in index_by_key:

@@ -19,7 +19,7 @@ const IMAGE_BROWSER_COLUMNS_DEFAULT = 4;
 const IMAGE_BROWSER_COLUMNS_MIN = 2;
 const IMAGE_BROWSER_COLUMNS_MAX = 8;
 const REFERENCE_CARD_MIN_WIDTH = 150;
-const REFERENCE_CARD_ROW_HEIGHT = 86;
+const REFERENCE_CARD_ROW_HEIGHT = 112;
 const REFERENCE_LIST_MAX_HEIGHT = 160;
 const REFERENCE_EMPTY_LIST_HEIGHT = 26;
 const REFERENCE_PANEL_CHROME_HEIGHT = 54;
@@ -59,6 +59,12 @@ function normalizeReferenceLabel(value, fallbackIndex = 0) {
 
 function referenceTag(ref) {
   return `@${normalizeReferenceLabel(ref?.label)}:character`;
+}
+
+function normalizeReferenceStrength(value, fallback = 1.0) {
+  const parsed = parseFloat(value);
+  const resolved = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(0, Math.min(1, resolved));
 }
 
 function hideWidget(w) {
@@ -520,6 +526,40 @@ const STYLES = `
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .pr-reference-strength-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+  }
+  .pr-reference-strength-label {
+    color: #aaa;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .pr-reference-strength-input {
+    min-width: 0;
+    width: 48px;
+    background: #181818;
+    color: #eee;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 11px;
+    box-sizing: border-box;
+  }
+  .pr-reference-strength-input::-webkit-outer-spin-button,
+  .pr-reference-strength-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .pr-reference-strength-input[type=number] {
+    -moz-appearance: textfield;
+  }
+  .pr-reference-strength-input:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
   .pr-reference-actions {
     display: flex;
@@ -1865,7 +1905,7 @@ function parseInitial(jsonStr) {
       label: normalizeReferenceLabel(ref.label, index),
       kind: "character",
       enabled: ref.enabled !== false,
-      strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      strength: normalizeReferenceStrength(ref.strength),
       description: String(ref.description || ""),
       ...ref,
     }))
@@ -1874,7 +1914,7 @@ function parseInitial(jsonStr) {
       label: normalizeReferenceLabel(ref.label, index),
       kind: "character",
       enabled: ref.enabled !== false,
-      strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+      strength: normalizeReferenceStrength(ref.strength),
       description: String(ref.description || ""),
     }));
 
@@ -2546,7 +2586,7 @@ class TimelineEditor {
         label: normalizeReferenceLabel(ref.label, index),
         kind: "character",
         enabled: ref.enabled !== false,
-        strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+        strength: normalizeReferenceStrength(ref.strength),
       }));
   }
 
@@ -2664,6 +2704,32 @@ class TimelineEditor {
       tag.textContent = referenceTag(ref);
       tag.title = referenceTag(ref);
 
+      const strengthRow = document.createElement("div");
+      strengthRow.className = "pr-reference-strength-row";
+      const strengthLabel = document.createElement("span");
+      strengthLabel.className = "pr-reference-strength-label";
+      strengthLabel.textContent = "Influence";
+      const strengthInput = document.createElement("input");
+      strengthInput.className = "pr-reference-strength-input";
+      strengthInput.type = "number";
+      strengthInput.min = "0";
+      strengthInput.max = "1";
+      strengthInput.step = "0.05";
+      strengthInput.value = normalizeReferenceStrength(ref.strength).toFixed(2);
+      strengthInput.title = "Default reference influence for bare prompt tags.";
+      strengthInput.disabled = this.privacyLocked;
+      for (const eventName of ["click", "keydown", "keyup", "keypress", "beforeinput", "wheel"]) {
+        strengthInput.addEventListener(eventName, (event) => event.stopPropagation());
+      }
+      strengthInput.addEventListener("change", () => {
+        if (this.privacyLocked) return;
+        ref.strength = normalizeReferenceStrength(strengthInput.value);
+        strengthInput.value = ref.strength.toFixed(2);
+        this.commitChanges(true);
+      });
+      strengthRow.appendChild(strengthLabel);
+      strengthRow.appendChild(strengthInput);
+
       const actions = document.createElement("div");
       actions.className = "pr-reference-actions";
 
@@ -2709,6 +2775,7 @@ class TimelineEditor {
       actions.appendChild(removeBtn);
       meta.appendChild(labelRow);
       meta.appendChild(tag);
+      meta.appendChild(strengthRow);
       meta.appendChild(actions);
       card.appendChild(img);
       card.appendChild(meta);
@@ -4278,7 +4345,6 @@ class TimelineEditor {
     replaceBtn.addEventListener("click", () => {
       if (this.privacyLocked) return;
       for (const state of rowState.values()) {
-        if (!state.check.checked) continue;
         if (state.item.kind === "reference") {
           const ref = (this.timeline.referenceImages || []).find((candidate) => candidate.id === state.item.id);
           if (ref) ref.description = state.generated.value || "";
@@ -6904,7 +6970,7 @@ class TimelineEditor {
         label: normalizeReferenceLabel(ref.label, index),
         kind: "character",
         enabled: ref.enabled !== false,
-        strength: Number.isFinite(parseFloat(ref.strength)) ? parseFloat(ref.strength) : 1.0,
+        strength: normalizeReferenceStrength(ref.strength),
       })).map(({ imgObj, ...ref }) => ref)
     };
   }

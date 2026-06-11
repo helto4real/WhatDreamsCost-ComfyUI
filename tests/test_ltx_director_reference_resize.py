@@ -441,6 +441,9 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
             debug["sections"][0]["substitutions"][0]["inserted_description"],
             "a young woman in a white dress",
         )
+        self.assertIsNone(debug["sections"][0]["reference_tags"][0]["strength_override"])
+        self.assertIsNone(debug["sections"][0]["substitutions"][0]["strength_override"])
+        self.assertEqual(debug["sections"][0]["substitutions"][0]["resolved_strength"], 0.7)
         self.assertEqual(debug["references"][0]["description"], "a young woman in a white dress")
         self.assertTrue(debug["references"][0]["hidden_tail"])
         self.assertEqual(debug["references"][0]["insert_frame"], 16)
@@ -554,6 +557,68 @@ class LTXDirectorReferenceResizeTests(unittest.TestCase):
         self.assertEqual(len(guide_data["reference_images"]), 1)
         self.assertEqual(guide_data["reference_images"][0]["segment_id"], "a,b")
         self.assertEqual(guide_data["insert_frames"], [24])
+
+    def test_character_reference_tag_strength_overrides_reference_default(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {"id": "ref-one", "label": "image1", "kind": "character", "imageFile": "ref.png", "strength": 0.8},
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character[0.35] enters"},
+            ],
+        }
+
+        result = self._execute_director_for_guide_data(
+            timeline,
+            {"ref.png": reference},
+            duration_frames=8,
+            local_prompts="@image1:character[0.35] enters",
+            segment_lengths="8",
+            return_full_result=True,
+        )
+
+        guide_data = result[4]
+        self.assertEqual(guide_data["hidden_reference_count"], 1)
+        self.assertEqual(guide_data["reference_images"][0]["strength"], 0.35)
+        self.assertEqual(guide_data["strengths"], [0.35])
+        debug = json.loads(result[-1])
+        self.assertEqual(debug["sections"][0]["reference_tags"][0]["strength_override"], 0.35)
+        self.assertEqual(debug["sections"][0]["substitutions"][0]["resolved_strength"], 0.35)
+        self.assertEqual(debug["guides"]["items"][0]["strength"], 0.35)
+
+    def test_same_reference_with_different_strengths_uses_separate_hidden_tail_slots(self):
+        reference = torch.ones((1, 200, 100, 3), dtype=torch.float32)
+        timeline = {
+            "referenceImages": [
+                {"id": "ref-one", "label": "image1", "kind": "character", "imageFile": "ref.png", "strength": 0.8},
+            ],
+            "segments": [
+                {"id": "a", "type": "text", "start": 0, "length": 8, "prompt": "@image1:character[0.35] enters"},
+                {"id": "b", "type": "text", "start": 8, "length": 8, "prompt": "@image1:character[0.75] turns"},
+            ],
+        }
+
+        result = self._execute_director_for_guide_data(
+            timeline,
+            {"ref.png": reference},
+            duration_frames=16,
+            local_prompts="@image1:character[0.35] enters | @image1:character[0.75] turns",
+            segment_lengths="8,8",
+            return_full_result=True,
+        )
+
+        guide_data = result[4]
+        self.assertEqual(guide_data["hidden_reference_count"], 2)
+        self.assertEqual([ref["segment_id"] for ref in guide_data["reference_images"]], ["a", "b"])
+        self.assertEqual([ref["strength"] for ref in guide_data["reference_images"]], [0.35, 0.75])
+        self.assertEqual(guide_data["insert_frames"], [24, 32])
+        self.assertEqual(guide_data["strengths"], [0.35, 0.75])
+        debug = json.loads(result[-1])
+        self.assertEqual(
+            [item["strength"] for item in debug["references"][0]["hidden_guides"]],
+            [0.35, 0.75],
+        )
 
     def test_two_character_references_use_two_hidden_tail_slots(self):
         reference_one = torch.ones((1, 200, 100, 3), dtype=torch.float32)
