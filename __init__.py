@@ -5,7 +5,7 @@ from .speech_length_calculator import SpeechLengthCalculator
 from .load_audio_ui import LoadAudioUI
 from .load_video_ui import LoadVideoUI
 from .ltx_director import LTXDirector
-from .ltx_director_guide import LTXDirectorGuide
+from .ltx_director_guide import LTXDirectorGuide, LTXDirectorCropGuides
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
@@ -29,6 +29,7 @@ NODE_CLASS_MAPPINGS = {
     "LoadVideoUI": LoadVideoUI,
     "LTXDirector": LTXDirector,
     "LTXDirectorGuide": LTXDirectorGuide,
+    "LTXDirectorCropGuides": LTXDirectorCropGuides,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -40,6 +41,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoadVideoUI": "Load Video UI",
     "LTXDirector": "LTX Director",
     "LTXDirectorGuide": "LTX Director Guide",
+    "LTXDirectorCropGuides": "LTX Director Crop Guides",
 }
 
 WEB_DIRECTORY = "./js"
